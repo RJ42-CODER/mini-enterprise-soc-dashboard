@@ -1,0 +1,360 @@
+<section id="incident-workbench-panel" class="incident-workbench-panel" aria-labelledby="workbench-title">
+  <!-- Workbench Header -->
+  <div class="workbench-header">
+    <div class="workbench-title-group">
+      <div class="workbench-icon" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+      </div>
+      <div>
+        <h2 id="workbench-title" class="workbench-heading">INCIDENT INVESTIGATION WORKBENCH</h2>
+        <p class="workbench-subtext">Analyst triage, telemetry evidence correlation, root cause classification, and containment tracking</p>
+      </div>
+    </div>
+    <div class="workbench-controls">
+      <div class="workbench-filter-group" role="group" aria-label="Incident Status Filter">
+        <button type="button" class="filter-pill active" data-filter="ALL" id="filter-all">All Incidents</button>
+        <button type="button" class="filter-pill" data-filter="OPEN" id="filter-open">Active / Open</button>
+        <button type="button" class="filter-pill" data-filter="CLOSED" id="filter-closed">Closed</button>
+      </div>
+      <button type="button" id="btn-refresh-incidents" class="btn btn-outline btn-sm" title="Refresh incidents and alerts queue">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;vertical-align:-1px;">
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+          <path d="M16 16h5v5" />
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="workbench-grid">
+    <!-- Left Column: Incidents Queue -->
+    <aside class="incidents-queue-pane" aria-label="Incident Queue">
+      <div class="queue-header">
+        <span class="queue-title">Telemetry Queue</span>
+        <span id="queue-count-badge" class="badge badge-neutral">0 Incidents</span>
+      </div>
+      <div id="incidents-list" class="incidents-list" role="list" aria-label="Incidents List">
+        <p class="muted p-queue-empty">Loading incidents queue...</p>
+      </div>
+    </aside>
+
+    <!-- Right Column: Incident Investigation Console -->
+    <div class="incident-details-pane" id="incident-details-container">
+      <!-- Empty State -->
+      <div id="incident-details-empty" class="incident-empty-state">
+        <div class="empty-icon-shield" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </div>
+        <h3>Select an Incident to Investigate</h3>
+        <p>Choose an incident from the queue on the left, or click <strong>Investigate</strong> on any detected technique card above to load its evidence dossier.</p>
+      </div>
+
+      <!-- Detail Content View -->
+      <div id="incident-details-content" class="incident-details-content" hidden>
+        
+        <!-- A. Incident Header Card -->
+        <section class="incident-header-card" aria-label="Incident Metadata">
+          <div class="header-card-top">
+            <div class="header-title-box">
+              <div class="id-and-title">
+                <span id="detail-incident-id" class="incident-id-tag">#INC-0</span>
+                <h3 id="detail-incident-title" class="incident-title-heading">Incident Title</h3>
+              </div>
+            </div>
+            <div class="header-badge-cluster">
+              <span id="detail-severity-badge" class="badge">MEDIUM</span>
+              <span id="detail-status-badge" class="badge">NEW</span>
+              <span id="detail-class-badge" class="badge badge-neutral" hidden>UNCLASSIFIED</span>
+            </div>
+          </div>
+
+          <!-- Aligned Key Metadata Grid -->
+          <div class="header-meta-grid">
+            <div class="meta-field">
+              <span class="meta-field-label">TARGET / SOURCE IP</span>
+              <strong id="detail-source-ip" class="mono-text meta-field-val">Not available</strong>
+            </div>
+            <div class="meta-field">
+              <span class="meta-field-label">MITRE TECHNIQUE &amp; SIGNATURE</span>
+              <span id="detail-technique-str" class="meta-field-val">Not available</span>
+            </div>
+            <div class="meta-field">
+              <span class="meta-field-label">FIRST DETECTED</span>
+              <span id="detail-created-at" class="mono-text meta-field-val">Not available</span>
+            </div>
+            <div class="meta-field">
+              <span class="meta-field-label">LAST UPDATED</span>
+              <span id="detail-updated-at" class="mono-text meta-field-val">Not available</span>
+            </div>
+          </div>
+
+          <!-- Closure Status Banner (Visible when closed) -->
+          <div id="detail-closure-info" class="closure-banner" hidden>
+            <div class="closure-icon" aria-hidden="true">✓</div>
+            <div class="closure-text">
+              <strong>Incident Closed:</strong> <span id="detail-closed-at" class="mono-text"></span>
+              <div class="closure-rationale-line"><em>Closure Rationale:</em> <span id="detail-closed-rationale"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- B. Incident Summary KPI Cards -->
+        <section class="incident-kpi-grid" aria-label="Incident Metric Summary">
+          <div class="incident-kpi-card">
+            <div class="inc-kpi-label">CORRELATED ALERTS</div>
+            <div id="summary-alert-count" class="inc-kpi-val">0</div>
+            <div class="inc-kpi-sub">Events grouped in time window</div>
+          </div>
+          <div class="incident-kpi-card">
+            <div class="inc-kpi-label">VERIFIED MITIGATIONS</div>
+            <div id="summary-mitigated-count" class="inc-kpi-val">0</div>
+            <div class="inc-kpi-sub">Confirmed on host nftables</div>
+          </div>
+          <div class="incident-kpi-card">
+            <div class="inc-kpi-label">INVESTIGATION PHASE</div>
+            <div id="summary-status-val" class="inc-kpi-val status-kpi-text">NEW</div>
+            <div class="inc-kpi-sub">Current workflow stage</div>
+          </div>
+          <div class="incident-kpi-card">
+            <div class="inc-kpi-label">RECORDED ACTIONS</div>
+            <div id="summary-action-count" class="inc-kpi-val">0</div>
+            <div class="inc-kpi-sub">Containment &amp; unblock records</div>
+          </div>
+        </section>
+
+        <!-- C. Investigation Workflow Stepper Card -->
+        <section class="workflow-card" aria-label="Investigation Workflow Pipeline">
+          <div class="card-section-header">
+            <div>
+              <h4 class="card-section-title">INVESTIGATION WORKFLOW PIPELINE</h4>
+              <p class="card-section-sub">Progress incident through formalized stages from triage to verified containment and closure</p>
+            </div>
+          </div>
+
+          <!-- 8-Stage Progress Stepper -->
+          <div class="workflow-stepper-wrap">
+            <div class="workflow-stepper" id="workflow-stepper">
+              <div class="step-node" data-step="NEW" title="Step 1: Alert ingested and incident initialized">
+                <span class="step-num">1</span>
+                <span class="step-label">New</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="TRIAGE" title="Step 2: Analyst initial triage of severity & evidence">
+                <span class="step-num">2</span>
+                <span class="step-label">Triage</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="INVESTIGATING" title="Step 3: In-depth telemetry and log correlation">
+                <span class="step-num">3</span>
+                <span class="step-label">Investigating</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="CLASSIFIED" title="Step 4: Formal classification with documented rationale">
+                <span class="step-num">4</span>
+                <span class="step-label">Classified</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="RESPONSE_REQUESTED" title="Step 5: Mitigation or containment requested">
+                <span class="step-num">5</span>
+                <span class="step-label">Response Req.</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="CONTAINMENT_PENDING_APPROVAL" title="Step 6: Containment action awaiting analyst authorization">
+                <span class="step-num">6</span>
+                <span class="step-label">Pending Appr.</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="CONTAINED" title="Step 7: Containment execution verified on host firewall">
+                <span class="step-num">7</span>
+                <span class="step-label">Contained</span>
+              </div>
+              <div class="step-connector"></div>
+              <div class="step-node" data-step="CLOSED" title="Step 8: Final incident disposition with documented rationale">
+                <span class="step-num">8</span>
+                <span class="step-label">Closed</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Workflow Transition Controls -->
+          <div class="workflow-controls-bar">
+            <div class="routine-actions-group">
+              <span class="action-group-label">Routine Workflow Transitions:</span>
+              <button type="button" id="btn-wf-triage" class="btn btn-secondary btn-sm">Advance to Triage</button>
+              <button type="button" id="btn-wf-investigating" class="btn btn-secondary btn-sm">Mark Investigating</button>
+              <button type="button" id="btn-wf-toggle-classify" class="btn btn-secondary btn-sm">Classify Incident...</button>
+              <button type="button" id="btn-wf-close" class="btn btn-outline btn-sm">Close Incident...</button>
+            </div>
+          </div>
+
+          <!-- Inline Classification Drawer -->
+          <div id="classification-drawer" class="classification-drawer" hidden>
+            <div class="drawer-header-row">
+              <span class="drawer-title">Formal Incident Classification</span>
+              <span class="drawer-hint">Select disposition category and record mandatory investigation rationale</span>
+            </div>
+            <div class="drawer-options-grid">
+              <label class="class-radio-card">
+                <input type="radio" name="incident-class-choice" value="CONFIRMED_MALICIOUS" checked>
+                <div class="radio-label-content">
+                  <strong>Confirmed Malicious</strong>
+                  <span>Active threat or unauthorized intrusion attempt confirmed</span>
+                </div>
+              </label>
+              <label class="class-radio-card">
+                <input type="radio" name="incident-class-choice" value="BENIGN_AUTHORIZED_TESTING">
+                <div class="radio-label-content">
+                  <strong>Benign / Authorized Testing</strong>
+                  <span>Authorized purple team, QA, penetration test, or operational noise</span>
+                </div>
+              </label>
+              <label class="class-radio-card">
+                <input type="radio" name="incident-class-choice" value="INCONCLUSIVE">
+                <div class="radio-label-content">
+                  <strong>Inconclusive</strong>
+                  <span>Insufficient telemetry evidence to definitively determine threat intent</span>
+                </div>
+              </label>
+            </div>
+            <div class="drawer-input-group">
+              <input type="text" id="classification-rationale-input" class="auth-input" placeholder="Enter investigation rationale for this classification (required)..." maxlength="500">
+              <button type="button" id="btn-submit-classification" class="btn btn-primary btn-sm">Save Classification</button>
+              <button type="button" id="btn-cancel-classification" class="btn btn-secondary btn-sm">Cancel</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- D & E. Split Section: Evidence Summary & Response Actions -->
+        <div class="detail-split-grid">
+          <!-- Column 1: Evidence & Threat Intel -->
+          <section class="evidence-card" aria-label="Evidence and Threat Intelligence">
+            <div class="card-section-header">
+              <h4 class="card-section-title">EVIDENCE &amp; THREAT INTEL</h4>
+              <span class="text-xs muted">Telemetry observation &amp; MITRE mapping</span>
+            </div>
+            <div class="evidence-keyvalue-grid">
+              <div class="ev-kv-row">
+                <span class="ev-label">Technique ID</span>
+                <strong id="ev-tech-id" class="mono-text ev-val">Not available</strong>
+              </div>
+              <div class="ev-kv-row">
+                <span class="ev-label">Technique Name</span>
+                <span id="ev-tech-name" class="ev-val">Not available</span>
+              </div>
+              <div class="ev-kv-row">
+                <span class="ev-label">ATT&amp;CK Tactic</span>
+                <span id="ev-tactic" class="ev-val">Not available</span>
+              </div>
+              <div class="ev-kv-row">
+                <span class="ev-label">Alert Signature</span>
+                <code id="ev-signature" class="mono-text ev-signature-tag">Not available</code>
+              </div>
+            </div>
+            <div class="ev-raw-block">
+              <span class="ev-label">Latest Raw Telemetry Message</span>
+              <div id="ev-message" class="ev-message-text">Not available</div>
+            </div>
+          </section>
+
+          <!-- Column 2: Response Actions & Containment Safety Console -->
+          <section class="response-actions-card" aria-label="Containment and Response Actions">
+            <div class="card-section-header">
+              <div class="resp-title-box">
+                <h4 class="card-section-title">RESPONSE &amp; CONTAINMENT</h4>
+                <span class="badge badge-amber text-xs">SOAR: DRY-RUN</span>
+              </div>
+              <button type="button" id="btn-wf-request-block" class="btn btn-danger-outline btn-sm" title="Initiate containment block request for target IP">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;vertical-align:-1px;">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                Request Containment
+              </button>
+            </div>
+
+            <!-- Containment Safety Notice -->
+            <div class="containment-safety-notice">
+              <div class="safety-icon">⚠️</div>
+              <div class="safety-text">
+                <strong>Containment Safety Notice:</strong> Containment requests enter <code>PENDING</code> status and require explicit analyst approval. Host mitigation is marked <strong>VERIFIED</strong> only after host firewall confirmation.
+              </div>
+            </div>
+
+            <!-- Response Actions History List -->
+            <div class="actions-history-list" id="incident-actions-container">
+              <p class="muted p-no-actions">No response actions recorded for this incident. Use 'Request Containment' to initiate a block.</p>
+            </div>
+          </section>
+        </div>
+
+        <!-- D. Correlated Telemetry Alerts Table -->
+        <section class="correlated-alerts-card" aria-label="Correlated Telemetry Alerts">
+          <div class="card-section-header">
+            <div>
+              <h4 class="card-section-title">CORRELATED TELEMETRY ALERTS (<span id="correlated-count">0</span>)</h4>
+              <p class="card-section-sub">Observed events correlated to this incident by source IP and signature within the investigation window</p>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table" id="table-correlated-alerts">
+              <thead>
+                <tr>
+                  <th scope="col" style="width: 140px;">Event ID</th>
+                  <th scope="col" style="width: 170px;">Timestamp (UTC)</th>
+                  <th scope="col" style="width: 100px;">Severity</th>
+                  <th scope="col" style="width: 130px;">Source IP</th>
+                  <th scope="col">Telemetry Evidence / Message</th>
+                </tr>
+              </thead>
+              <tbody id="correlated-alerts-body">
+                <tr><td colspan="5" class="text-center muted">No alerts correlated</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- F & G. Activity Timeline & Analyst Notes Grid -->
+        <div class="activity-notes-grid">
+          <!-- Column 1: Chronological Audit Timeline -->
+          <section class="timeline-card" aria-label="Chronological Audit Timeline">
+            <div class="card-section-header">
+              <h4 class="card-section-title">CHRONOLOGICAL AUDIT TIMELINE</h4>
+              <span class="text-xs muted">Chronological record of ingest, audits, and mitigations</span>
+            </div>
+            <div class="timeline-container" id="timeline-feed">
+              <p class="muted">Loading timeline events...</p>
+            </div>
+          </section>
+
+          <!-- Column 2: Analyst Investigation Notes -->
+          <section class="analyst-notes-card" aria-label="Analyst Investigation Notes">
+            <div class="card-section-header">
+              <h4 class="card-section-title">INVESTIGATION NOTES</h4>
+              <span class="text-xs muted">Timestamped analyst observations &amp; findings</span>
+            </div>
+
+            <!-- Add Note Form -->
+            <div class="add-note-box">
+              <label for="analyst-note-textarea" class="note-input-label">Record Investigation Note</label>
+              <textarea id="analyst-note-textarea" class="note-textarea" placeholder="Record investigation findings, threat intel, packet traces, or IOCs..." rows="4"></textarea>
+              <div class="note-btn-row">
+                <span class="text-xs muted">Appends to incident audit trail</span>
+                <button type="button" id="btn-add-note" class="btn btn-primary btn-sm">Post Note</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>

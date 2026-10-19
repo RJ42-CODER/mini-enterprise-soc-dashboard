@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini Enterprise Defensive SOC · MITRE ATT&CK Matrix</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard_component.css') }}">
+</head>
+
+<body class="soc-body">
+  <header class="soc-navbar">
+    <div class="soc-brand-group">
+      <div class="soc-logo-icon" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <path d="m9 12 2 2 4-4" />
+        </svg>
+      </div>
+      <div>
+        <h1 class="soc-app-title">MINI ENTERPRISE DEFENSIVE SOC</h1>
+        <p class="soc-app-subtitle">Purple Team Validation &amp; Autonomous Containment Console</p>
+      </div>
+    </div>
+    <div class="soc-status-badges">
+      <span class="badge badge-pulse"><span class="pulse-indicator"></span>LIVE MONITOR</span>
+      <span class="badge badge-neutral">ENDPOINT: 127.0.0.1:8443</span>
+      <span class="badge badge-amber">SOAR: DRY-RUN</span>
+      <span id="soc-clock" class="soc-clock">UTC --:--:--</span>
+    </div>
+  </header>
+
+  <main class="soc-main-content">
+    <!-- Analyst Authentication Toolbar -->
+    <section class="auth-toolbar-panel" aria-labelledby="auth-toolbar-title">
+      <div class="auth-toolbar-header">
+        <div class="auth-title-container">
+          <div class="auth-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </div>
+          <div>
+            <h2 id="auth-toolbar-title" class="auth-heading">Analyst Session Authentication</h2>
+            <p class="auth-subtext">Provide your Bearer token to authorize telemetry queries and mitigation actions.
+              Held in memory only; never saved to disk or localStorage.</p>
+          </div>
+        </div>
+        <div class="auth-status-container">
+          <span id="auth-status-badge" class="auth-badge status-unauthenticated">● Token Not Set</span>
+        </div>
+      </div>
+
+      <div class="auth-input-row">
+        <div class="auth-field-wrapper">
+          <input type="password" id="analyst-token-input" class="auth-input"
+            placeholder="Paste ANALYST_TOKEN to authenticate session..." autocomplete="off" spellcheck="false"
+            aria-label="Analyst Authentication Token">
+          <button type="button" id="btn-toggle-token" class="auth-toggle-btn" title="Toggle token visibility">
+            Show
+          </button>
+        </div>
+        <button type="button" id="btn-set-token" class="btn btn-primary">Set Token</button>
+        <button type="button" id="btn-clear-token" class="btn btn-secondary">Clear</button>
+        <button type="button" id="btn-refresh" class="btn btn-outline" title="Refresh MITRE matrix data">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px;vertical-align:-1px;">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+            <path d="M16 16h5v5" />
+          </svg>
+          Refresh Matrix
+        </button>
+      </div>
+      <div id="auth-helper-msg" class="auth-helper-msg">
+        <span class="auth-helper-lock">🔒 Local-only:</span> Requests send
+        <code>Authorization: Bearer &lt;token&gt;</code> to <code>http://127.0.0.1:8443/api/soc/mitre-matrix</code>.
+      </div>
+    </section>
+
+    <!-- Operational KPI Summary Cards -->
+    <section class="kpi-summary-grid" aria-label="Security Metrics Summary">
+      <div class="kpi-card">
+        <div class="kpi-label">PURPLE TEAM RESILIENCE</div>
+        <div id="stat-resilience" class="kpi-value">—</div>
+        <div class="kpi-subtext">Verified mitigations / detections</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">DETECTED TECHNIQUES</div>
+        <div id="stat-detected" class="kpi-value">0</div>
+        <div class="kpi-subtext">Alert signatures observed</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">VERIFIED MITIGATIONS</div>
+        <div id="stat-mitigated" class="kpi-value">0</div>
+        <div class="kpi-subtext">Confirmed host nftables blocks</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">MONITORED TECHNIQUES</div>
+        <div id="stat-total" class="kpi-value">6</div>
+        <div class="kpi-subtext">Registered ATT&CK mappings</div>
+      </div>
+    </section>
+
+    <!-- MITRE ATT&CK Matrix Component Section -->
+    {% include "dashboard_component.html" %}
+
+    <!-- Incident Investigation Workflow Section -->
+    {% include "incident_component.html" %}
+
+    <!-- Architecture & Verification Guidance -->
+    <details class="soc-reference-accordion" aria-label="SOC Operational Reference">
+      <summary class="soc-reference-summary">
+        <span class="ref-summary-icon" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </span>
+        <span class="ref-summary-title">Defensive SOC Operational Reference &amp; Architectural Criteria</span>
+        <span class="ref-summary-hint">(Click to expand reference notes)</span>
+      </summary>
+      <div class="soc-reference-content">
+        <div class="guidance-col">
+          <h4>Defensive SOC Rules of Engagement</h4>
+          <p>Telemetry ingest occurs via <code>/api/events</code> with agent authentication. Containment requests are
+            queued as <code>PENDING</code> for analyst review and dry-run execution.</p>
+        </div>
+        <div class="guidance-col">
+          <h4>Mitigation Status Criteria</h4>
+          <p>A technique reflects <strong style="color:#16a34a">MITIGATED</strong> only after independent verification of
+            the host <code>nftables</code> set. Agent execution report alone is insufficient.</p>
+        </div>
+        <div class="guidance-col">
+          <h4>Localhost Development</h4>
+          <p>API runs bound to <code>127.0.0.1:8443</code>. Production deployments must place this interface behind an
+            external TLS reverse proxy before exposing to remote networks.</p>
+        </div>
+      </div>
+    </details>
+  </main>
+
+  <footer class="soc-bottom-bar">
+    <div>Mini Enterprise Defensive SOC · Flask 3.x · SQLite WAL Telemetry</div>
+    <div>Local Development Console · Dry-Run SOAR Enabled</div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='dashboard_component.js') }}"></script>
+</body>
+
+</html>

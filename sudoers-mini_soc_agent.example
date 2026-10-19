@@ -1,0 +1,5 @@
+# Example only; NOT a production-safe direct nft permission.
+# Prefer a root-owned helper that permits only validated block/unblock operations.
+# If direct nft access is required for a disposable lab, validate with visudo:
+# agent_user ALL=(root) NOPASSWD: /usr/sbin/nft
+# This grants broad firewall-modification capability. Do not deploy as-is.

@@ -1,0 +1,16 @@
+<!-- NOTE: Standalone reference copy. The active template included by Flask is in templates/dashboard_component.html -->
+<section class="mitre-panel" aria-labelledby="mitre-title">
+  <header class="mitre-header">
+    <div>
+      <p class="eyebrow">PURPLE TEAM VALIDATION</p>
+      <h2 id="mitre-title">MITRE ATT&amp;CK coverage</h2>
+      <p class="muted">Status uses stored telemetry and verified response evidence.</p>
+    </div>
+    <div class="resilience"><span class="muted">Purple Team Resilience Index</span>
+      <strong id="resilience-value">—</strong><small id="resilience-detail">Waiting for data</small>
+    </div>
+  </header>
+  <div class="mitre-legend"><span>● Untested</span><span>● Detected</span><span>● Mitigated</span></div>
+  <div id="mitre-grid" class="mitre-grid" aria-live="polite">Loading…</div>
+  <p id="mitre-error" class="error" role="alert" hidden></p>
+</section>
