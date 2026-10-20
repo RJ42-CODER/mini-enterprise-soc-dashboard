@@ -44,6 +44,26 @@ desktop.ini
 *.cert
 *.crt
 
-# Temporary files
+# Distribution, packaging, and downloaded wheels
+wheels/
+*.whl
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Network packet captures & telemetry dumps
+*.pcap
+*.pcapng
+*.cap
+*.jsonl
+
+# Temporary and backup files
 *.tmp
 *.bak
+*.backup
+*.old
+*.orig
+*.rej
+.mypy_cache/
+.ruff_cache/

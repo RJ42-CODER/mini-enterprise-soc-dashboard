@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Import backend application and helpers
 import soc_backend
-from soc_backend import app, init_db, db, get_agent_token, get_analyst_token, REGISTRY
+from soc_backend import app, init_db, db, get_agent_token, get_analyst_token, REGISTRY, validate_startup_config, get_bind_host, get_port
 
 TEST_AGENT_TOKEN = "test_agent_secret_token_12345"
 TEST_ANALYST_TOKEN = "test_analyst_secret_token_67890"
@@ -721,6 +721,168 @@ class TestDefensiveSocBackend(unittest.TestCase):
         self.assertIn('soc-reference-accordion', html)
         self.assertIn('Defensive SOC Rules of Engagement', html)
         self.assertIn('Mitigation Status Criteria', html)
+
+    # -------------------------------------------------------------------------
+    # 18. INFO Severity Support and Persistence
+    # -------------------------------------------------------------------------
+    def test_18_info_severity_support_and_persistence(self):
+        """Telemetry sent with severity='info' (e.g. from Secure Portal port probes) is accepted and persists."""
+        headers = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        payload = {
+            "source_ip": "192.168.31.91",
+            "signature": "PORT_SCAN",
+            "severity": "info",
+            "message": "Port probe connection observed"
+        }
+        res = self.client.post("/api/events", headers=headers, json=payload)
+        self.assertEqual(res.status_code, 202)
+        inc_id = res.get_json()["incident_id"]
+
+        with db(self.test_db_path) as c:
+            row = c.execute("SELECT * FROM incidents WHERE incident_id=?", (inc_id,)).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["severity"], "info")
+
+        # Now send high severity alert for same IP/signature -> severity escalates
+        res2 = self.client.post("/api/events", headers=headers, json={
+            "source_ip": "192.168.31.91",
+            "signature": "PORT_SCAN",
+            "severity": "high",
+            "message": "Aggressive port sweep"
+        })
+        self.assertEqual(res2.status_code, 202)
+        with db(self.test_db_path) as c:
+            row2 = c.execute("SELECT * FROM incidents WHERE incident_id=?", (inc_id,)).fetchone()
+            self.assertEqual(row2["severity"], "high")
+
+    # -------------------------------------------------------------------------
+    # 19. X-API-Key Header Authentication Support
+    # -------------------------------------------------------------------------
+    def test_19_x_api_key_header_authentication(self):
+        """Endpoints support X-API-Key header in addition to Authorization: Bearer."""
+        # Agent endpoint with X-API-Key
+        r1 = self.client.post("/api/events", headers={"X-API-Key": TEST_AGENT_TOKEN}, json={
+            "source_ip": "10.0.0.77", "signature": "SQL_INJECTION", "severity": "medium"
+        })
+        self.assertEqual(r1.status_code, 202)
+
+        # Analyst endpoint with X-API-Key
+        r2 = self.client.get("/api/soc/mitre-matrix", headers={"X-API-Key": TEST_ANALYST_TOKEN})
+        self.assertEqual(r2.status_code, 200)
+
+        # Wrong X-API-Key -> 401
+        r3 = self.client.post("/api/events", headers={"X-API-Key": "wrong-key"}, json={
+            "source_ip": "10.0.0.77", "signature": "SQL_INJECTION"
+        })
+        self.assertEqual(r3.status_code, 401)
+
+    # -------------------------------------------------------------------------
+    # 20. Extended Portal Signature Normalization & Operational Events
+    # -------------------------------------------------------------------------
+    def test_20_extended_portal_signature_normalization(self):
+        """Portal event types (LOGIN_FAILED, AUTH_BRUTE_FORCE, AUTH_SUCCESS) map accurately."""
+        headers = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        # LOGIN_FAILED maps to BRUTE_FORCE_AUTH
+        r_lf = self.client.post("/api/events", headers=headers, json={
+            "source_ip": "192.168.31.91", "event_type": "LOGIN_FAILED"
+        })
+        self.assertEqual(r_lf.status_code, 202)
+        self.assertEqual(r_lf.get_json()["signature"], "BRUTE_FORCE_AUTH")
+
+        # AUTH_BRUTE_FORCE maps to BRUTE_FORCE_AUTH
+        r_abf = self.client.post("/api/events", headers=headers, json={
+            "source_ip": "192.168.31.91", "event_type": "AUTH_BRUTE_FORCE"
+        })
+        self.assertEqual(r_abf.status_code, 202)
+        self.assertEqual(r_abf.get_json()["signature"], "BRUTE_FORCE_AUTH")
+
+        # AUTH_SUCCESS is acknowledged as operational telemetry without creating alerts
+        r_as = self.client.post("/api/events", headers=headers, json={
+            "source_ip": "192.168.31.91", "event_type": "AUTH_SUCCESS"
+        })
+        self.assertEqual(r_as.status_code, 202)
+        self.assertEqual(r_as.get_json()["event_type"], "auth_success")
+
+    # -------------------------------------------------------------------------
+    # 21. Startup Configuration Validation Actionability
+    # -------------------------------------------------------------------------
+    def test_21_startup_configuration_validation_actionability(self):
+        """validate_startup_config validates secrets, ports, paths without leaking secret values."""
+        # 1. Valid configuration succeeds
+        conf = validate_startup_config()
+        self.assertTrue(conf["agent_auth_configured"])
+        self.assertEqual(conf["agent_token_len"], len(TEST_AGENT_TOKEN))
+        self.assertTrue(conf["analyst_auth_configured"])
+        self.assertEqual(conf["analyst_token_len"], len(TEST_ANALYST_TOKEN))
+
+        # 2. Missing agent token raises SystemExit
+        orig_agent = app.config.get("SOC_AGENT_TOKEN")
+        try:
+            app.config["SOC_AGENT_TOKEN"] = ""
+            saved_env = os.environ.pop("SOC_AGENT_TOKEN", None)
+            saved_key = os.environ.pop("SOC_API_KEY", None)
+            with self.assertRaises(SystemExit) as ctx:
+                validate_startup_config()
+            self.assertIn("Missing agent authentication token", str(ctx.exception))
+            if saved_env: os.environ["SOC_AGENT_TOKEN"] = saved_env
+            if saved_key: os.environ["SOC_API_KEY"] = saved_key
+        finally:
+            app.config["SOC_AGENT_TOKEN"] = orig_agent
+
+        # 3. Placeholder agent token raises SystemExit
+        try:
+            app.config["SOC_AGENT_TOKEN"] = "replace_with_random_agent_secret"
+            with self.assertRaises(SystemExit) as ctx:
+                validate_startup_config()
+            self.assertIn("Placeholder agent token detected", str(ctx.exception))
+        finally:
+            app.config["SOC_AGENT_TOKEN"] = orig_agent
+
+        # 4. Invalid port raises SystemExit
+        orig_port = app.config.get("SOC_PORT")
+        try:
+            app.config["SOC_PORT"] = "999999"
+            with self.assertRaises(SystemExit) as ctx:
+                validate_startup_config()
+            self.assertIn("Invalid SOC_PORT", str(ctx.exception))
+        finally:
+            if orig_port is not None: app.config["SOC_PORT"] = orig_port
+            else: app.config.pop("SOC_PORT", None)
+
+    # -------------------------------------------------------------------------
+    # 22. Ingestion of All Six Attack Signatures and MITRE ATT&CK Mapping
+    # -------------------------------------------------------------------------
+    def test_22_all_six_attack_signatures_ingestion_and_mitre_mapping(self):
+        """All 6 core portal attack signatures ingest, persist, and map to expected MITRE IDs."""
+        headers = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        expected_mappings = {
+            "PORT_SCAN": "T1046",
+            "DIR_FUZZ": "T1083",
+            "PATH_TRAVERSAL": "T1083",
+            "SQL_INJECTION": "T1190",
+            "BRUTE_FORCE_AUTH": "T1110",
+            "COMMAND_INJECTION": "T1059",
+        }
+
+        for idx, (sig, expected_tid) in enumerate(expected_mappings.items(), start=1):
+            ip = f"192.168.31.{100 + idx}"
+            res = self.client.post("/api/events", headers=headers, json={
+                "source_ip": ip,
+                "signature": sig,
+                "severity": "medium",
+                "message": f"Test verification for {sig}"
+            })
+            self.assertEqual(res.status_code, 202, f"Failed for {sig}")
+            data = res.get_json()
+            self.assertEqual(data["mitre_id"], expected_tid)
+            self.assertEqual(data["signature"], sig)
+
+            # Confirm persistent storage in SQLite
+            with db(self.test_db_path) as c:
+                row = c.execute("SELECT * FROM alerts WHERE source_ip=? AND signature=?", (ip, sig)).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row["mitre_id"], expected_tid)
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,8 +26,12 @@ def _load_env_file():
             if "=" in line:
                 k, v = line.split("=", 1)
                 k = k.strip()
-                v = v.strip().strip("'\"")
-                if k and k not in os.environ:
+                v = v.strip()
+                # Strip inline comments if not enclosed in quotes
+                if not (v.startswith('"') and v.endswith('"')) and not (v.startswith("'") and v.endswith("'")):
+                    v = v.split("#")[0].strip()
+                v = v.strip("'\"")
+                if k and (k not in os.environ or not os.environ[k]):
                     os.environ[k] = v
 
 _load_env_file()
@@ -58,6 +62,80 @@ def get_analyst_token():
     """Return configured analyst token for dashboard API access."""
     return app.config.get("ANALYST_TOKEN") or os.getenv("ANALYST_TOKEN") or ""
 
+def get_bind_host():
+    """Return configured bind host for Flask listener (default: 0.0.0.0)."""
+    return app.config.get("SOC_BIND_HOST") or os.getenv("SOC_BIND_HOST", "0.0.0.0")
+
+def get_port():
+    """Return configured port for Flask listener (default: 8443)."""
+    val = app.config.get("SOC_PORT") or os.getenv("SOC_PORT", "8443")
+    try:
+        p = int(val)
+        if 1 <= p <= 65535:
+            return p
+    except (ValueError, TypeError):
+        pass
+    return 8443
+
+def validate_startup_config():
+    """
+    Validate server configuration on startup.
+    Ensures required secrets and parameters exist without exposing sensitive token values.
+    Returns a dict of sanitized configuration status info or raises SystemExit.
+    """
+    errors = []
+    agent_tok = get_agent_token()
+    analyst_tok = get_analyst_token()
+
+    if not agent_tok:
+        errors.append("Missing agent authentication token: Set SOC_AGENT_TOKEN (or SOC_API_KEY) in .env or environment.")
+    elif agent_tok.startswith("replace_with_"):
+        errors.append("Placeholder agent token detected: Replace placeholder in .env with your actual random secret.")
+
+    if not analyst_tok:
+        errors.append("Missing analyst authentication token: Set ANALYST_TOKEN in .env or environment.")
+    elif analyst_tok.startswith("replace_with_"):
+        errors.append("Placeholder analyst token detected: Replace placeholder in .env with your actual random secret.")
+
+    raw_port = app.config.get("SOC_PORT") or os.getenv("SOC_PORT", "8443")
+    try:
+        port = int(raw_port)
+        if not (1 <= port <= 65535):
+            errors.append(f"Invalid SOC_PORT '{port}': Port must be an integer between 1 and 65535.")
+    except (ValueError, TypeError):
+        errors.append(f"Invalid SOC_PORT '{raw_port}': Port must be a numeric integer.")
+        port = 8443
+
+    db_path = Path(get_db_path())
+    db_dir = db_path.parent
+    if not db_dir.exists():
+        try:
+            db_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            errors.append(f"Database directory '{db_dir}' cannot be created: {str(e)}")
+    elif not os.access(db_dir, os.W_OK):
+        errors.append(f"Database directory '{db_dir}' is not writable. Check folder permissions.")
+
+    if errors:
+        msg = "\n".join(f"  [!] {e}" for e in errors)
+        raise SystemExit(
+            f"=== SOC Dashboard Startup Configuration Error ===\n"
+            f"{msg}\n"
+            f"Please verify settings in .env before starting the dashboard.\n"
+            f"=================================================="
+        )
+
+    bind_host = get_bind_host()
+    return {
+        "bind_host": bind_host,
+        "port": port,
+        "db_path": str(db_path),
+        "agent_auth_configured": bool(agent_tok),
+        "agent_token_len": len(agent_tok),
+        "analyst_auth_configured": bool(analyst_tok),
+        "analyst_token_len": len(analyst_tok),
+    }
+
 # 6 Core MITRE ATT&CK Mappings
 REGISTRY = {
  "PORT_SCAN": ("T1046", "Network Service Discovery", "Reconnaissance"),
@@ -74,35 +152,41 @@ EVENT_NORMALIZATION = {
     "PORT_SCAN": "PORT_SCAN",
     "PORTSCAN": "PORT_SCAN",
     "PORT_SCANNING": "PORT_SCAN",
+    "PORT-SCAN": "PORT_SCAN",
     # DIR_FUZZ
     "DIR_FUZZ": "DIR_FUZZ",
     "DIR_FUZZING": "DIR_FUZZ",
     "DIRECTORY_FUZZ": "DIR_FUZZ",
     "DIRECTORY_FUZZING": "DIR_FUZZ",
     "DIRECTORY_BRUTEFORCE": "DIR_FUZZ",
+    "DIR-FUZZ": "DIR_FUZZ",
     # PATH_TRAVERSAL
     "PATH_TRAVERSAL": "PATH_TRAVERSAL",
     "DIRECTORY_TRAVERSAL": "PATH_TRAVERSAL",
     "FILE_PATH_TRAVERSAL": "PATH_TRAVERSAL",
+    "PATH-TRAVERSAL": "PATH_TRAVERSAL",
     # SQL_INJECTION
     "SQL_INJECTION": "SQL_INJECTION",
     "SQLI": "SQL_INJECTION",
     "SQL-INJECTION": "SQL_INJECTION",
+    "SQL_INJECT": "SQL_INJECTION",
     # BRUTE_FORCE_AUTH
     "BRUTE_FORCE_AUTH": "BRUTE_FORCE_AUTH",
     "BRUTE_FORCE": "BRUTE_FORCE_AUTH",
     "AUTH_BRUTE_FORCE": "BRUTE_FORCE_AUTH",
     "LOGIN_BRUTE_FORCE": "BRUTE_FORCE_AUTH",
     "CREDENTIAL_BRUTE_FORCE": "BRUTE_FORCE_AUTH",
+    "LOGIN_FAILED": "BRUTE_FORCE_AUTH",
     # COMMAND_INJECTION
     "COMMAND_INJECTION": "COMMAND_INJECTION",
     "CMD_INJECTION": "COMMAND_INJECTION",
     "OS_COMMAND_INJECTION": "COMMAND_INJECTION",
+    "COMMAND-INJECTION": "COMMAND_INJECTION",
 }
 
 # Non-attack operational events (acknowledged safely without false-positive attack alerts)
 NON_ATTACK_SIGNATURES = {
-    "HEARTBEAT", "PING", "HEALTHCHECK", "HEALTH_CHECK", "STATUS"
+    "HEARTBEAT", "PING", "HEALTHCHECK", "HEALTH_CHECK", "STATUS", "AUTH_SUCCESS", "LOGIN_SUCCESS"
 }
 
 # Formal Analyst Investigation Workflow States
@@ -203,7 +287,7 @@ def init_db(db_path=None):
                 key = (row["source_ip"], row["signature"])
                 groups.setdefault(key, []).append(row)
 
-            sev_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+            sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
             for (sip, sig), alert_list in groups.items():
                 tech_name = REGISTRY.get(sig, (None, sig, None))[1]
                 mitre = REGISTRY.get(sig, (None, None, None))[0]
@@ -232,10 +316,27 @@ def auth(role):
         def inner(*a, **kw):
             expected = get_agent_token() if role == "agent" else get_analyst_token()
             if not expected:
+                app.logger.warning(
+                    f"Authentication rejected on {request.method} {request.path}: "
+                    f"{role} authentication is not configured on the SOC backend (missing token)"
+                )
                 return jsonify(error=f"{role} auth not configured"), 503
             header = request.headers.get("Authorization", "")
-            token = header[7:] if header.startswith("Bearer ") else ""
-            if not token or not secrets.compare_digest(token, expected):
+            token = header[7:].strip() if header.startswith("Bearer ") else ""
+            if not token and not header:
+                token = request.headers.get("X-API-Key", "").strip()
+            client_ip = request.remote_addr or "unknown"
+            if not token:
+                app.logger.warning(
+                    f"Authentication failed on {request.method} {request.path} from {client_ip}: "
+                    f"Missing or malformed Authorization header (expected Bearer token)"
+                )
+                return jsonify(error="Unauthorized"), 401
+            if not secrets.compare_digest(token, expected):
+                app.logger.warning(
+                    f"Authentication failed on {request.method} {request.path} from {client_ip}: "
+                    f"Invalid {role} token supplied (length: {len(token)})"
+                )
                 return jsonify(error="Unauthorized"), 401
             return fn(*a, **kw)
         return inner
@@ -284,16 +385,18 @@ def ingest():
 
     cleaned_sig = raw_sig.upper().strip()
 
-    # Acknowledge non-attack telemetry (heartbeat / ping) without false-positive alerts
+    # Acknowledge non-attack telemetry (heartbeat / ping / auth success) without false-positive alerts
     if cleaned_sig in NON_ATTACK_SIGNATURES:
+        app.logger.info(f"Operational telemetry acknowledged from {source}: {cleaned_sig}")
         return jsonify(
             status="accepted",
-            event_type="heartbeat",
-            message="Heartbeat acknowledged; no security alert recorded"
+            event_type=cleaned_sig.lower(),
+            message="Operational telemetry acknowledged; no security alert recorded"
         ), 202
 
     sig = EVENT_NORMALIZATION.get(cleaned_sig)
     if not sig or sig not in REGISTRY:
+        app.logger.warning(f"Ingestion rejected from {source}: Unsupported signature '{raw_sig}'")
         return jsonify(
             error=f"Unsupported signature '{raw_sig}'. Must map to registered detection types: {list(REGISTRY.keys())}"
         ), 400
@@ -302,8 +405,9 @@ def ingest():
     if not isinstance(raw_sev, str):
         return jsonify(error="Field 'severity' must be a string"), 400
     severity = raw_sev.lower().strip()
-    if severity not in ("low", "medium", "high", "critical"):
-        return jsonify(error=f"Invalid 'severity' '{raw_sev}'. Must be one of ('low', 'medium', 'high', 'critical')"), 400
+    if severity not in ("info", "low", "medium", "high", "critical"):
+        app.logger.warning(f"Ingestion rejected from {source}: Invalid severity '{raw_sev}'")
+        return jsonify(error=f"Invalid 'severity' '{raw_sev}'. Must be one of ('info', 'low', 'medium', 'high', 'critical')"), 400
 
     raw_event_id = d.get("event_id")
     if raw_event_id is not None and not isinstance(raw_event_id, (str, int)):
@@ -335,7 +439,7 @@ def ingest():
                 ORDER BY incident_id DESC LIMIT 1
             """, (source, sig)).fetchone()
 
-            sev_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+            sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
             if inc_row:
                 inc_id = inc_row["incident_id"]
                 current_inc_sev = inc_row["severity"]
@@ -348,6 +452,7 @@ def ingest():
                     INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                     VALUES (?, 'SYSTEM', ?, ?, 'SYSTEM')
                 """, (inc_id, now(), f"Correlated alert {event_id} ({severity}): {msg[:120]}"))
+                app.logger.info(f"Correlated {sig} alert ({event_id}, severity={severity}) from {source} into existing incident #{inc_id}")
             else:
                 tech_name = REGISTRY[sig][1]
                 title = f"{tech_name} detected from {source}"
@@ -361,6 +466,7 @@ def ingest():
                     INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                     VALUES (?, 'SYSTEM', ?, ?, 'SYSTEM')
                 """, (inc_id, now(), f"Incident opened from alert {event_id} ({severity}): {msg[:120]}"))
+                app.logger.info(f"Opened new incident #{inc_id} from {sig} alert ({event_id}, severity={severity}) from {source}")
 
     except sqlite3.Error as e:
         return jsonify(error=f"Database persistence error: {str(e)}"), 500
@@ -760,16 +866,13 @@ def add_incident_note(incident_id):
 
 if __name__ == "__main__":
     init_db()
-    agent_tok = get_agent_token()
-    analyst_tok = get_analyst_token()
-    if not agent_tok or not analyst_tok:
-        raise SystemExit(
-            "Configuration error: Both SOC_AGENT_TOKEN (or SOC_API_KEY) and ANALYST_TOKEN must be set.\n"
-            "Configure them in .env or supply them as environment variables."
-        )
-    bind_host = os.getenv("SOC_BIND_HOST", "127.0.0.1")
-    port = int(os.getenv("SOC_PORT", "8443"))
+    conf = validate_startup_config()
+    bind_host = conf["bind_host"]
+    port = conf["port"]
     print(f"[*] Starting Mini Enterprise Defensive SOC Dashboard on http://{bind_host}:{port} (HTTP)")
     print(f"[*] Telemetry ingestion route: http://{bind_host}:{port}/api/events")
-    print(f"[*] Active database: {get_db_path()}")
+    print(f"[*] MITRE matrix route: http://{bind_host}:{port}/api/soc/mitre-matrix")
+    print(f"[*] Active database: {conf['db_path']}")
+    print(f"[*] Agent authentication: CONFIGURED ({conf['agent_token_len']} chars)")
+    print(f"[*] Analyst authentication: CONFIGURED ({conf['analyst_token_len']} chars)")
     app.run(host=bind_host, port=port, debug=False)
