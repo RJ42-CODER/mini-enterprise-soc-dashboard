@@ -4,7 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mini Enterprise Defensive SOC · MITRE ATT&CK Matrix</title>
+  <title>Mini Enterprise Defensive SOC · Cyber Defense Console</title>
+  <meta name="description" content="Mini Enterprise Defensive SOC - Real-time Threat Detection, Purple Team Validation, and Autonomous Containment Workbench">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
@@ -14,147 +15,765 @@
 </head>
 
 <body class="soc-body">
-  <header class="soc-navbar">
-    <div class="soc-brand-group">
-      <div class="soc-logo-icon" aria-hidden="true">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-          <path d="m9 12 2 2 4-4" />
-        </svg>
-      </div>
-      <div>
-        <h1 class="soc-app-title">MINI ENTERPRISE DEFENSIVE SOC</h1>
-        <p class="soc-app-subtitle">Purple Team Validation &amp; Autonomous Containment Console</p>
-      </div>
-    </div>
-    <div class="soc-status-badges">
-      <span class="badge badge-pulse"><span class="pulse-indicator"></span>LIVE MONITOR</span>
-      <span class="badge badge-neutral">ENDPOINT: 127.0.0.1:8443</span>
-      <span class="badge badge-amber">SOAR: DRY-RUN</span>
-      <span id="soc-clock" class="soc-clock">UTC --:--:--</span>
-    </div>
-  </header>
-
-  <main class="soc-main-content">
-    <!-- Analyst Authentication Toolbar -->
-    <section class="auth-toolbar-panel" aria-labelledby="auth-toolbar-title">
-      <div class="auth-toolbar-header">
-        <div class="auth-title-container">
-          <div class="auth-icon" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-          </div>
-          <div>
-            <h2 id="auth-toolbar-title" class="auth-heading">Analyst Session Authentication</h2>
-            <p class="auth-subtext">Provide your Bearer token to authorize telemetry queries and mitigation actions.
-              Held in memory only; never saved to disk or localStorage.</p>
-          </div>
+  <div class="soc-app-layout">
+    
+    <!-- ====================================================================
+         Sidebar Navigation
+         ==================================================================== -->
+    <aside class="soc-sidebar" aria-label="Main Navigation">
+      <div class="sidebar-brand">
+        <div class="brand-logo-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
         </div>
-        <div class="auth-status-container">
-          <span id="auth-status-badge" class="auth-badge status-unauthenticated">● Token Not Set</span>
+        <div class="brand-text">
+          <h1 class="brand-title">DEFENSIVE SOC</h1>
+          <span class="brand-badge">THREAT OPS</span>
         </div>
       </div>
 
-      <div class="auth-input-row">
-        <div class="auth-field-wrapper">
-          <input type="password" id="analyst-token-input" class="auth-input"
-            placeholder="Paste ANALYST_TOKEN to authenticate session..." autocomplete="off" spellcheck="false"
-            aria-label="Analyst Authentication Token">
-          <button type="button" id="btn-toggle-token" class="auth-toggle-btn" title="Toggle token visibility">
-            Show
+      <!-- Navigation Menu -->
+      <nav class="sidebar-nav">
+        <ul class="nav-list" role="menubar">
+          <li class="nav-item">
+            <a href="#dashboard" class="nav-link active" id="nav-dashboard" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+              <span class="nav-label">Dashboard</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#alerts" class="nav-link" id="nav-alerts" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span class="nav-label">Alerts</span>
+              <span id="sidebar-alert-badge" class="nav-count-badge">0</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#investigations" class="nav-link" id="nav-investigations" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <span class="nav-label">Investigations</span>
+              <span id="sidebar-inc-badge" class="nav-count-badge">0</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#trends" class="nav-link" id="nav-trends" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              <span class="nav-label">Trends</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#mitre" class="nav-link" id="nav-mitre" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+              <span class="nav-label">MITRE ATT&amp;CK</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#actions" class="nav-link" id="nav-actions" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <span class="nav-label">Response Actions</span>
+              <span id="sidebar-action-badge" class="nav-count-badge">0</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#reports" class="nav-link" id="nav-reports" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              <span class="nav-label">Reports</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#settings" class="nav-link" id="nav-settings" role="menuitem">
+              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span class="nav-label">Settings</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+
+      <!-- Sidebar Footer Session Status -->
+      <div class="sidebar-footer">
+        <div class="session-user-box">
+          <div class="session-avatar">SA</div>
+          <div class="session-info">
+            <span class="session-name">SOC Analyst</span>
+            <span id="sidebar-auth-indicator" class="session-status status-dot-offline">Token Not Set</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ====================================================================
+         Main Workspace & Top Bar
+         ==================================================================== -->
+    <div class="soc-workspace">
+      
+      <!-- Top Navigation Bar -->
+      <header class="soc-topbar">
+        <div class="topbar-left">
+          <button type="button" class="sidebar-toggle-btn" id="sidebar-toggle-btn" aria-label="Toggle navigation menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
+          <nav class="breadcrumb-nav" aria-label="Breadcrumb">
+            <span class="breadcrumb-root">SOC Console</span>
+            <span class="breadcrumb-separator">/</span>
+            <span id="page-breadcrumb" class="breadcrumb-current">Dashboard</span>
+          </nav>
         </div>
-        <button type="button" id="btn-set-token" class="btn btn-primary">Set Token</button>
-        <button type="button" id="btn-clear-token" class="btn btn-secondary">Clear</button>
-        <button type="button" id="btn-refresh" class="btn btn-outline" title="Refresh MITRE matrix data">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-            stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px;vertical-align:-1px;">
-            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-            <path d="M3 3v5h5" />
-            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
-            <path d="M16 16h5v5" />
-          </svg>
-          Refresh Matrix
-        </button>
-      </div>
-      <div id="auth-helper-msg" class="auth-helper-msg">
-        <span class="auth-helper-lock">🔒 Local-only:</span> Requests send
-        <code>Authorization: Bearer &lt;token&gt;</code> to <code>http://127.0.0.1:8443/api/soc/mitre-matrix</code>.
-      </div>
-    </section>
 
-    <!-- Operational KPI Summary Cards -->
-    <section class="kpi-summary-grid" aria-label="Security Metrics Summary">
-      <div class="kpi-card">
-        <div class="kpi-label">PURPLE TEAM RESILIENCE</div>
-        <div id="stat-resilience" class="kpi-value">—</div>
-        <div class="kpi-subtext">Verified mitigations / detections</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">DETECTED TECHNIQUES</div>
-        <div id="stat-detected" class="kpi-value">0</div>
-        <div class="kpi-subtext">Alert signatures observed</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">VERIFIED MITIGATIONS</div>
-        <div id="stat-mitigated" class="kpi-value">0</div>
-        <div class="kpi-subtext">Confirmed host nftables blocks</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">MONITORED TECHNIQUES</div>
-        <div id="stat-total" class="kpi-value">6</div>
-        <div class="kpi-subtext">Registered ATT&CK mappings</div>
-      </div>
-    </section>
+        <div class="topbar-right">
+          <div class="soc-status-badges">
+            <span class="badge badge-pulse" title="Real-time telemetry event listener active"><span class="pulse-indicator"></span>LIVE MONITOR</span>
+            <span class="badge badge-neutral" title="SOC Telemetry API Endpoint">127.0.0.1:8443</span>
+            <span class="badge badge-amber" title="Safe simulation mode enabled">SOAR: DRY-RUN</span>
+            <span id="soc-clock" class="soc-clock mono-text">UTC --:--:--</span>
+          </div>
 
-    <!-- MITRE ATT&CK Matrix Component Section -->
-    {% include "dashboard_component.html" %}
+          <div class="topbar-actions">
+            <!-- Analyst Token Quick Indicator Pill -->
+            <button type="button" id="btn-quick-token" class="auth-pill-btn" title="Click to manage Analyst Session Token">
+              <span id="auth-status-badge" class="auth-badge status-unauthenticated">● Token Not Set</span>
+            </button>
 
-    <!-- Incident Investigation Workflow Section -->
-    {% include "incident_component.html" %}
-
-    <!-- Architecture & Verification Guidance -->
-    <details class="soc-reference-accordion" aria-label="SOC Operational Reference">
-      <summary class="soc-reference-summary">
-        <span class="ref-summary-icon" aria-hidden="true">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="16" x2="12" y2="12"></line>
-            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-          </svg>
-        </span>
-        <span class="ref-summary-title">Defensive SOC Operational Reference &amp; Architectural Criteria</span>
-        <span class="ref-summary-hint">(Click to expand reference notes)</span>
-      </summary>
-      <div class="soc-reference-content">
-        <div class="guidance-col">
-          <h4>Defensive SOC Rules of Engagement</h4>
-          <p>Telemetry ingest occurs via <code>/api/events</code> with agent authentication. Containment requests are
-            queued as <code>PENDING</code> for analyst review and dry-run execution.</p>
+            <!-- Global Refresh Button -->
+            <button type="button" id="btn-refresh" class="btn btn-outline btn-icon-only" title="Refresh all telemetry, incidents, and MITRE matrix">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                <path d="M16 16h5v5" />
+              </svg>
+            </button>
+          </div>
         </div>
-        <div class="guidance-col">
-          <h4>Mitigation Status Criteria</h4>
-          <p>A technique reflects <strong style="color:#16a34a">MITIGATED</strong> only after independent verification of
-            the host <code>nftables</code> set. Agent execution report alone is insufficient.</p>
-        </div>
-        <div class="guidance-col">
-          <h4>Localhost Development</h4>
-          <p>API runs bound to <code>127.0.0.1:8443</code>. Production deployments must place this interface behind an
-            external TLS reverse proxy before exposing to remote networks.</p>
+      </header>
+
+      <!-- Main Content Area with Single-Page Views -->
+      <main class="soc-main-content" id="soc-main-content">
+
+        <!-- ==============================================================
+             VIEW 1: Dashboard Overview
+             ============================================================== -->
+        <section id="view-dashboard" class="soc-view active" aria-labelledby="dash-heading">
+          <!-- Unauthenticated Banner (Shown if token not set) -->
+          <div id="unauth-banner" class="notice-banner banner-warning">
+            <div class="banner-icon">🔒</div>
+            <div class="banner-body">
+              <strong>Analyst Session Unauthenticated:</strong> Enter your <code>ANALYST_TOKEN</code> in Settings or click the token button above to query telemetry, approve containment, or classify incidents.
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-banner-auth">Set Token</button>
+          </div>
+
+          <!-- Operational KPI Summary Cards -->
+          <div class="kpi-summary-grid" aria-label="Security Metrics Summary">
+            <div class="kpi-card" id="card-stat-resilience">
+              <div class="kpi-header">
+                <span class="kpi-label">PURPLE TEAM RESILIENCE</span>
+                <span class="kpi-icon-pill">🛡️</span>
+              </div>
+              <div id="stat-resilience" class="kpi-value mono-text">—</div>
+              <div class="kpi-subtext">Verified mitigations / detections</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-header">
+                <span class="kpi-label">DETECTED TECHNIQUES</span>
+                <span class="kpi-icon-pill">🎯</span>
+              </div>
+              <div id="stat-detected" class="kpi-value mono-text">0</div>
+              <div class="kpi-subtext">Active alert signatures observed</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-header">
+                <span class="kpi-label">VERIFIED MITIGATIONS</span>
+                <span class="kpi-icon-pill">✅</span>
+              </div>
+              <div id="stat-mitigated" class="kpi-value mono-text">0</div>
+              <div class="kpi-subtext">Confirmed host nftables blocks</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-header">
+                <span class="kpi-label">MONITORED TECHNIQUES</span>
+                <span class="kpi-icon-pill">📊</span>
+              </div>
+              <div id="stat-total" class="kpi-value mono-text">6</div>
+              <div class="kpi-subtext">Registered ATT&amp;CK mappings</div>
+            </div>
+          </div>
+
+          <!-- Quick Action / Navigation Cards -->
+          <div class="quick-nav-grid">
+            <a href="#alerts" class="quick-nav-card">
+              <div class="quick-nav-icon">🚨</div>
+              <div class="quick-nav-text">
+                <strong>Review Ingested Alerts</strong>
+                <span>Two-column card grid with live filtering &amp; threat telemetry</span>
+              </div>
+              <span class="quick-nav-arrow">→</span>
+            </a>
+            <a href="#investigations" class="quick-nav-card">
+              <div class="quick-nav-icon">🔬</div>
+              <div class="quick-nav-text">
+                <strong>Incident Investigations</strong>
+                <span>8-stage workflow stepper, root-cause classification, &amp; SOAR actions</span>
+              </div>
+              <span class="quick-nav-arrow">→</span>
+            </a>
+            <a href="#reports" class="quick-nav-card">
+              <div class="quick-nav-icon">📝</div>
+              <div class="quick-nav-text">
+                <strong>Generate Reports</strong>
+                <span>Draft incident briefs with live preview &amp; persistent records</span>
+              </div>
+              <span class="quick-nav-arrow">→</span>
+            </a>
+          </div>
+
+          <!-- MITRE ATT&CK Matrix Component Section -->
+          {% include "dashboard_component.html" %}
+
+          <!-- Dashboard Recent Activity Section -->
+          <div class="dash-activity-split">
+            <!-- Active Incidents Teaser -->
+            <div class="dash-card">
+              <div class="dash-card-header">
+                <h3 class="dash-card-title">Active Incidents</h3>
+                <a href="#investigations" class="btn btn-outline btn-xs">View All</a>
+              </div>
+              <div id="dash-active-incidents" class="dash-list">
+                <p class="muted p-empty">Loading active incidents...</p>
+              </div>
+            </div>
+
+            <!-- Recent Alerts Stream -->
+            <div class="dash-card">
+              <div class="dash-card-header">
+                <h3 class="dash-card-title">Recent Telemetry Alerts</h3>
+                <a href="#alerts" class="btn btn-outline btn-xs">View All Alerts</a>
+              </div>
+              <div id="dash-recent-alerts" class="dash-list">
+                <p class="muted p-empty">Loading telemetry alerts...</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 2: Alerts Page (Card-Based 2-Column Responsive Design)
+             ============================================================== -->
+        <section id="view-alerts" class="soc-view" aria-labelledby="alerts-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="alerts-heading" class="page-title">TELEMETRY ALERTS</h2>
+              <p class="page-subtitle">Real-time alerts ingested from edge agents and application log monitors. Correlated into incidents.</p>
+            </div>
+            <div class="page-header-actions">
+              <button type="button" class="btn btn-outline btn-sm" id="btn-toggle-focus">
+                <span id="focus-btn-label">Focus Mode</span>
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-alerts">Refresh Alerts</button>
+            </div>
+          </div>
+
+          <!-- Filter & Search Toolbar -->
+          <div class="alerts-filter-toolbar">
+            <div class="filter-search-box">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-2px;"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input type="text" id="alerts-search-input" class="search-input" placeholder="Search by IP, signature, technique, or payload..." autocomplete="off">
+            </div>
+
+            <div class="filter-controls-cluster">
+              <div class="filter-pill-group" role="group" aria-label="Severity Filter">
+                <button type="button" class="filter-pill active" data-sev="ALL">All (<span id="count-sev-all">0</span>)</button>
+                <button type="button" class="filter-pill filter-critical" data-sev="CRITICAL">Critical</button>
+                <button type="button" class="filter-pill filter-high" data-sev="HIGH">High</button>
+                <button type="button" class="filter-pill filter-medium" data-sev="MEDIUM">Medium</button>
+                <button type="button" class="filter-pill filter-low" data-sev="LOW">Low</button>
+                <button type="button" class="filter-pill filter-info" data-sev="INFO">Info</button>
+              </div>
+
+              <select id="alerts-sig-filter" class="form-select form-select-sm" aria-label="Filter by Signature">
+                <option value="ALL">All Signatures</option>
+                <option value="DIR_FUZZ">DIR_FUZZ</option>
+                <option value="SQL_INJECTION">SQL_INJECTION</option>
+                <option value="COMMAND_INJECTION">COMMAND_INJECTION</option>
+                <option value="PATH_TRAVERSAL">PATH_TRAVERSAL</option>
+                <option value="BRUTE_FORCE_AUTH">BRUTE_FORCE_AUTH</option>
+                <option value="PORT_SCAN">PORT_SCAN</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Alerts Responsive Two-Column Grid -->
+          <div id="alerts-grid" class="alerts-card-grid" aria-live="polite">
+            <p class="muted p-grid-empty">Loading telemetry alerts...</p>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 3: Investigations Queue
+             ============================================================== -->
+        <section id="view-investigations" class="soc-view" aria-labelledby="inv-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="inv-heading" class="page-title">INCIDENT INVESTIGATIONS</h2>
+              <p class="page-subtitle">Security incidents correlated across telemetry streams. Select an incident to open the dedicated workbench.</p>
+            </div>
+            <div class="workbench-filter-group" role="group" aria-label="Incident Status Filter">
+              <button type="button" class="filter-pill active" data-filter="ALL" id="filter-all">All Incidents</button>
+              <button type="button" class="filter-pill" data-filter="OPEN" id="filter-open">Active / Open</button>
+              <button type="button" class="filter-pill" data-filter="CLOSED" id="filter-closed">Closed</button>
+            </div>
+          </div>
+
+          <div class="investigations-queue-wrapper">
+            <div class="queue-header">
+              <span class="queue-title">Correlated Security Incidents</span>
+              <span id="queue-count-badge" class="badge badge-neutral">0 Incidents</span>
+            </div>
+            <div id="incidents-list" class="incidents-grid" role="list" aria-label="Incidents List">
+              <p class="muted p-queue-empty">Loading incidents queue...</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 4: Dedicated Incident Investigation Workbench View
+             ============================================================== -->
+        <section id="view-incident-detail" class="soc-view" aria-labelledby="detail-incident-id" hidden>
+          <!-- Dedicated Workbench Component Included -->
+          {% include "incident_component.html" %}
+        </section>
+
+        <!-- ==============================================================
+             VIEW 5: Telemetry Trends & Threat Analytics
+             ============================================================== -->
+        <section id="view-trends" class="soc-view" aria-labelledby="trends-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="trends-heading" class="page-title">THREAT INTELLIGENCE &amp; TRENDS</h2>
+              <p class="page-subtitle">Aggregate distribution of detected signatures, adversary tactics, and containment effectiveness.</p>
+            </div>
+          </div>
+
+          <div class="trends-grid">
+            <!-- Signature Breakdown Card -->
+            <div class="trends-card">
+              <h3 class="trends-card-title">Attack Signatures Breakdown</h3>
+              <p class="text-xs muted">Distribution of observed attacks across registered detection patterns</p>
+              <div id="trends-signature-bars" class="bar-chart-container">
+                <p class="muted p-loading">Analyzing telemetry signatures...</p>
+              </div>
+            </div>
+
+            <!-- Severity Distribution Card -->
+            <div class="trends-card">
+              <h3 class="trends-card-title">Alert Severity Profile</h3>
+              <p class="text-xs muted">Breakdown of ingested alerts by threat level</p>
+              <div id="trends-severity-bars" class="bar-chart-container">
+                <p class="muted p-loading">Analyzing severity breakdown...</p>
+              </div>
+            </div>
+
+            <!-- Top Adversary IPs Card -->
+            <div class="trends-card trends-card-wide">
+              <h3 class="trends-card-title">Top Host Probing Sources</h3>
+              <p class="text-xs muted">Source IPs generating repeated or correlated attacks</p>
+              <div id="trends-source-table-wrap" class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Source IP</th>
+                      <th>Total Alerts</th>
+                      <th>Signatures Observed</th>
+                      <th>Incident Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="trends-source-tbody">
+                    <tr><td colspan="5" class="text-center muted">Loading telemetry sources...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 6: MITRE ATT&CK Matrix View
+             ============================================================== -->
+        <section id="view-mitre" class="soc-view" aria-labelledby="mitre-full-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="mitre-full-heading" class="page-title">MITRE ATT&amp;CK PURPLE TEAM MATRIX</h2>
+              <p class="page-subtitle">Adversary techniques mapped to defensive SOC detection signatures and verified host mitigations.</p>
+            </div>
+          </div>
+          <!-- MITRE Grid re-rendered here dynamically -->
+          <div id="mitre-full-container">
+            <div class="mitre-legend"><span>● Untested</span><span>● Detected</span><span>● Mitigated</span></div>
+            <div id="mitre-grid-full" class="mitre-grid">Loading MITRE ATT&amp;CK matrix...</div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 7: SOAR Response Actions
+             ============================================================== -->
+        <section id="view-actions" class="soc-view" aria-labelledby="actions-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="actions-heading" class="page-title">SOAR CONTAINMENT &amp; RESPONSE ACTIONS</h2>
+              <p class="page-subtitle">Dry-run host containment queue, analyst approval workflows, and nftables verification records.</p>
+            </div>
+            <span class="badge badge-amber">SOAR: DRY-RUN</span>
+          </div>
+
+          <div class="containment-safety-notice">
+            <div class="safety-icon" aria-hidden="true">⚠️</div>
+            <div class="safety-text">
+              <strong>Containment Safety Notice:</strong> Containment requests enter <code>PENDING</code> status and require explicit analyst approval. Host mitigation is marked <strong>VERIFIED</strong> only after host firewall confirmation.
+            </div>
+          </div>
+
+          <div class="actions-table-wrap table-responsive">
+            <table class="data-table" id="table-all-actions">
+              <thead>
+                <tr>
+                  <th>Action ID</th>
+                  <th>Incident</th>
+                  <th>Target IP</th>
+                  <th>Action Type</th>
+                  <th>Status</th>
+                  <th>Triggered By</th>
+                  <th>Created (UTC)</th>
+                  <th>Executed (UTC)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="all-actions-body">
+                <tr><td colspan="9" class="text-center muted">Loading response actions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 8: Dedicated Reports Page
+             ============================================================== -->
+        <section id="view-reports" class="soc-view" aria-labelledby="reports-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="reports-heading" class="page-title">SECURITY INCIDENT &amp; THREAT REPORTS</h2>
+              <p class="page-subtitle">Formal incident investigation reporting, executive summaries, threat intelligence dossiers, and mitigation records.</p>
+            </div>
+          </div>
+
+          <div class="reports-layout-grid">
+            <!-- Report Creation Form Column -->
+            <div class="report-form-card">
+              <div class="card-section-header">
+                <div>
+                  <h3 class="card-section-title">CREATE INCIDENT REPORT</h3>
+                  <p class="card-section-sub">Fill in the fields below. Preview updates live in real-time.</p>
+                </div>
+              </div>
+
+              <form id="report-form" class="report-form" onsubmit="return false;">
+                <div class="form-group">
+                  <label for="report-title-input" class="form-label">Report Title <span class="required">*</span></label>
+                  <input type="text" id="report-title-input" class="form-input" placeholder="e.g. Incident #INC-1: Directory Fuzzing Threat Dossier" required maxlength="200">
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label for="report-type-select" class="form-label">Report Category <span class="required">*</span></label>
+                    <select id="report-type-select" class="form-select" required>
+                      <option value="Incident Investigation Dossier">Incident Investigation Dossier</option>
+                      <option value="Executive Security Briefing">Executive Security Briefing</option>
+                      <option value="MITRE Threat Assessment">MITRE Threat Assessment</option>
+                      <option value="Containment &amp; Remediation Audit">Containment &amp; Remediation Audit</option>
+                    </select>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label for="report-incident-select" class="form-label">Linked Incident</label>
+                    <select id="report-incident-select" class="form-select">
+                      <option value="">General SOC Report (Unlinked)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="report-date-range-select" class="form-label">Investigation Date Range</label>
+                  <select id="report-date-range-select" class="form-select">
+                    <option value="Last 24 Hours">Last 24 Hours</option>
+                    <option value="Last 7 Days">Last 7 Days</option>
+                    <option value="Full Incident Lifecycle">Full Incident Lifecycle</option>
+                    <option value="Purple Team Campaign Window">Purple Team Campaign Window</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="report-summary-input" class="form-label">Executive Summary <span class="required">*</span></label>
+                  <textarea id="report-summary-input" class="form-textarea" rows="4" placeholder="Summarize incident scope, observed adversary tactics, impact, and final disposition..." required maxlength="4000"></textarea>
+                </div>
+
+                <div class="form-group">
+                  <label for="report-findings-input" class="form-label">Technical Findings &amp; Evidence</label>
+                  <textarea id="report-findings-input" class="form-textarea" rows="4" placeholder="Detail specific telemetry payloads, HTTP methods, queried paths, status codes, and attribution..." maxlength="4000"></textarea>
+                </div>
+
+                <div class="form-actions-row">
+                  <button type="button" class="btn btn-secondary" id="btn-preview-report">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:5px;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                    Refresh Preview
+                  </button>
+                  <button type="button" class="btn btn-primary" id="btn-submit-report">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:5px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    Submit &amp; Save Report
+                  </button>
+                  <button type="button" class="btn btn-outline" id="btn-print-report" title="Print or save as PDF">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:5px;"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></svg>
+                    Print / PDF
+                  </button>
+                </div>
+                <div id="report-feedback-msg" class="form-feedback-msg" hidden></div>
+              </form>
+            </div>
+
+            <!-- Report Document Preview Column -->
+            <div class="report-preview-card">
+              <div class="card-section-header">
+                <div>
+                  <h3 class="card-section-title">LIVE REPORT PREVIEW</h3>
+                  <span class="badge badge-neutral text-xs">Formatted Document</span>
+                </div>
+              </div>
+
+              <!-- Printable Report Sheet Container -->
+              <div class="printable-report-sheet" id="printable-report-sheet">
+                <div class="report-doc-header">
+                  <div class="report-doc-brand">
+                    <span class="report-doc-org">MINI ENTERPRISE DEFENSIVE SOC</span>
+                    <h2 id="prev-title" class="report-doc-title">Incident Investigation Dossier</h2>
+                    <span id="prev-category" class="badge badge-purple">Incident Investigation Dossier</span>
+                  </div>
+                  <div class="report-doc-meta">
+                    <div><strong>Date Generated:</strong> <span id="prev-date" class="mono-text">--</span></div>
+                    <div><strong>Analyst Author:</strong> <span class="mono-text">SOC_ANALYST</span></div>
+                    <div><strong>Target Incident:</strong> <span id="prev-incident-tag" class="mono-text">General Dossier</span></div>
+                    <div><strong>Classification:</strong> <span id="prev-classification" class="badge badge-neutral">PENDING</span></div>
+                  </div>
+                </div>
+
+                <div class="report-doc-section">
+                  <h4 class="doc-sec-title">1. EXECUTIVE SUMMARY</h4>
+                  <p id="prev-summary" class="doc-sec-text">Enter summary in the form on the left to populate this section.</p>
+                </div>
+
+                <div class="report-doc-section">
+                  <h4 class="doc-sec-title">2. TECHNICAL FINDINGS &amp; TELEMETRY EVIDENCE</h4>
+                  <div id="prev-findings" class="doc-sec-text">Detailed telemetry findings will appear here.</div>
+                </div>
+
+                <div class="report-doc-section">
+                  <h4 class="doc-sec-title">3. INCIDENT METRICS &amp; MITIGATION STATUS</h4>
+                  <div class="doc-metrics-table-wrap">
+                    <table class="doc-metrics-table">
+                      <tbody>
+                        <tr><th>Source Target IP</th><td id="prev-source-ip" class="mono-text">—</td></tr>
+                        <tr><th>MITRE ATT&amp;CK Mapping</th><td id="prev-mitre">—</td></tr>
+                        <tr><th>Correlated Alert Count</th><td id="prev-alert-count">0</td></tr>
+                        <tr><th>Containment Mitigation</th><td id="prev-mitigation-status">DRY-RUN / UNVERIFIED</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="report-doc-footer">
+                  <span>Defensive SOC Operational Security Report · Confidential</span>
+                  <span>Generated via Defensive SOC Dashboard Console</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Generated Reports History Section -->
+          <div class="reports-history-section">
+            <div class="card-section-header">
+              <div>
+                <h3 class="card-section-title">SAVED REPORTS HISTORY</h3>
+                <p class="card-section-sub">Previously generated and archived security reports</p>
+              </div>
+              <button type="button" class="btn btn-outline btn-xs" id="btn-refresh-reports-list">Refresh History</button>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table" id="table-reports-history">
+                <thead>
+                  <tr>
+                    <th>Report ID</th>
+                    <th>Created (UTC)</th>
+                    <th>Report Title</th>
+                    <th>Category</th>
+                    <th>Linked Incident</th>
+                    <th>Author</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="reports-history-body">
+                  <tr><td colspan="7" class="text-center muted">Loading reports history...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 9: Settings & Operational Reference
+             ============================================================== -->
+        <section id="view-settings" class="soc-view" aria-labelledby="settings-heading" hidden>
+          <div class="page-header-bar">
+            <div>
+              <h2 id="settings-heading" class="page-title">SYSTEM SETTINGS &amp; AUTHENTICATION</h2>
+              <p class="page-subtitle">Configure session tokens, verify backend endpoints, and review operational rules of engagement.</p>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <!-- Analyst Authentication Toolbar Panel -->
+            <section class="auth-toolbar-panel" aria-labelledby="auth-toolbar-title">
+              <div class="auth-toolbar-header">
+                <div class="auth-title-container">
+                  <div class="auth-icon" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 id="auth-toolbar-title" class="auth-heading">Analyst Session Authentication</h3>
+                    <p class="auth-subtext">Provide your Bearer token to authorize telemetry queries and mitigation actions.
+                      Held in volatile memory only; never saved to disk or localStorage.</p>
+                  </div>
+                </div>
+                <div class="auth-status-container">
+                  <span id="settings-auth-badge" class="auth-badge status-unauthenticated">● Token Not Set</span>
+                </div>
+              </div>
+
+              <div class="auth-input-row">
+                <div class="auth-field-wrapper">
+                  <input type="password" id="analyst-token-input" class="auth-input"
+                    placeholder="Paste ANALYST_TOKEN to authenticate session..." autocomplete="off" spellcheck="false"
+                    aria-label="Analyst Authentication Token">
+                  <button type="button" id="btn-toggle-token" class="auth-toggle-btn" title="Toggle token visibility">
+                    Show
+                  </button>
+                </div>
+                <button type="button" id="btn-set-token" class="btn btn-primary">Set Token</button>
+                <button type="button" id="btn-clear-token" class="btn btn-secondary">Clear</button>
+                <button type="button" id="btn-test-auth" class="btn btn-outline" title="Test authentication against backend">
+                  Verify Session
+                </button>
+              </div>
+              <div id="auth-helper-msg" class="auth-helper-msg">
+                <span class="auth-helper-lock">🔒 Local-only:</span> Requests send
+                <code>Authorization: Bearer &lt;token&gt;</code> to <code>http://127.0.0.1:8443/api/soc/mitre-matrix</code>.
+              </div>
+            </section>
+
+            <!-- Backend Connection Summary Card -->
+            <section class="settings-card">
+              <div class="card-section-header">
+                <h3 class="card-section-title">BACKEND CONNECTION STATUS</h3>
+              </div>
+              <div class="settings-info-grid">
+                <div class="info-item">
+                  <span class="info-label">FLASK BACKEND HOST</span>
+                  <span class="mono-text">127.0.0.1:8443 (HTTP)</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">DATABASE PERSISTENCE</span>
+                  <span class="mono-text">SQLite WAL Mode (soc_telemetry.db)</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">SOAR CONTAINMENT AGENT</span>
+                  <span class="badge badge-amber text-xs">DRY-RUN / REMEDIATION POLLER</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">TELEMETRY INGESTION</span>
+                  <span class="mono-text">POST /api/events (agent token auth)</span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- Architecture & Verification Guidance Accordion -->
+          <details class="soc-reference-accordion" aria-label="SOC Operational Reference">
+            <summary class="soc-reference-summary">
+              <span class="ref-summary-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="16" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                </svg>
+              </span>
+              <span class="ref-summary-title">Defensive SOC Operational Reference &amp; Architectural Criteria</span>
+              <span class="ref-summary-hint">(Click to expand reference notes)</span>
+            </summary>
+            <div class="soc-reference-content">
+              <div class="guidance-col">
+                <h4>Defensive SOC Rules of Engagement</h4>
+                <p>Telemetry ingest occurs via <code>/api/events</code> with agent authentication. Containment requests are
+                  queued as <code>PENDING</code> for analyst review and dry-run execution.</p>
+              </div>
+              <div class="guidance-col">
+                <h4>Mitigation Status Criteria</h4>
+                <p>A technique reflects <strong style="color:#10b981">MITIGATED</strong> only after independent verification of
+                  the host <code>nftables</code> set. Agent execution report alone is insufficient.</p>
+              </div>
+              <div class="guidance-col">
+                <h4>Localhost Development</h4>
+                <p>API runs bound to <code>127.0.0.1:8443</code>. Production deployments must place this interface behind an
+                  external TLS reverse proxy before exposing to remote networks.</p>
+              </div>
+            </div>
+          </details>
+        </section>
+
+      </main>
+
+      <!-- App Bottom Bar -->
+      <footer class="soc-bottom-bar">
+        <div>Mini Enterprise Defensive SOC · Flask 3.x · SQLite WAL Telemetry</div>
+        <div>Local Development Console · Dry-Run SOAR Enabled</div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Global Toast Notification Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Global Modal: Quick Token Dialog -->
+  <div id="modal-quick-token" class="soc-modal-backdrop" hidden>
+    <div class="soc-modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title">Analyst Authentication Token</h3>
+        <button type="button" class="modal-close-btn" id="modal-close-token">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-sm muted">Enter your <code>ANALYST_TOKEN</code> to authenticate this session. Token is held in memory only.</p>
+        <div class="auth-field-wrapper" style="margin-top:12px;">
+          <input type="password" id="modal-token-input" class="auth-input" placeholder="Paste ANALYST_TOKEN..." autocomplete="off">
         </div>
       </div>
-    </details>
-  </main>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="modal-btn-clear-token">Clear</button>
+        <button type="button" class="btn btn-primary" id="modal-btn-save-token">Set Token</button>
+      </div>
+    </div>
+  </div>
 
-  <footer class="soc-bottom-bar">
-    <div>Mini Enterprise Defensive SOC · Flask 3.x · SQLite WAL Telemetry</div>
-    <div>Local Development Console · Dry-Run SOAR Enabled</div>
-  </footer>
-
+  <!-- Main Dashboard Script -->
   <script src="{{ url_for('static', filename='dashboard_component.js') }}"></script>
 </body>
 

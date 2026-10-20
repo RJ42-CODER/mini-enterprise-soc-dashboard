@@ -1,9 +1,10 @@
 """Starter Flask SOC API with SQLite, response actions, MITRE aggregation, and Incident Investigation."""
-import ipaddress, os, secrets, sqlite3
+import ipaddress, json, os, secrets, sqlite3, threading, time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
+from typing import Optional, Tuple, Dict, Any, List, Set
 from flask import Flask, jsonify, request, render_template
 
 def _load_env_file():
@@ -76,6 +77,194 @@ def get_port():
     except (ValueError, TypeError):
         pass
     return 8443
+
+def get_dir_fuzz_threshold() -> int:
+    """Return configured distinct 404 path threshold for DIR_FUZZ detection (default: 3)."""
+    val = app.config.get("DIR_FUZZ_THRESHOLD") or os.getenv("DIR_FUZZ_THRESHOLD", "3")
+    try:
+        t = int(val)
+        if t >= 1:
+            return t
+    except (ValueError, TypeError):
+        pass
+    return 3
+
+def get_dir_fuzz_window() -> int:
+    """Return configured sliding time window in seconds for DIR_FUZZ probe tracking (default: 60)."""
+    val = app.config.get("DIR_FUZZ_WINDOW_SECONDS") or os.getenv("DIR_FUZZ_WINDOW_SECONDS", "60")
+    try:
+        w = int(val)
+        if w >= 1:
+            return w
+    except (ValueError, TypeError):
+        pass
+    return 60
+
+# ---------------------------------------------------------------------------
+# Directory Discovery (DIR_FUZZ) Classification & Tracking Engine
+# ---------------------------------------------------------------------------
+
+BENIGN_PATHS = {
+    "/favicon.ico",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+}
+
+BENIGN_PREFIXES = (
+    "/static/",
+    "/assets/",
+)
+
+def is_benign_path(path: str) -> bool:
+    """Check if requested path is a standard benign web asset (false-positive safeguard)."""
+    if not path or not isinstance(path, str):
+        return False
+    clean = path.split("?")[0].split("#")[0].strip().lower()
+    if not clean.startswith("/"):
+        clean = "/" + clean
+    if clean in BENIGN_PATHS:
+        return True
+    if any(clean.startswith(prefix) for prefix in BENIGN_PREFIXES):
+        return True
+    return False
+
+SUSPICIOUS_PATHS = {
+    "/.env", "/.env.local", "/.env.production", "/.env.backup", "/.env.save",
+    "/.git", "/.git/config", "/.git/head", "/.gitignore",
+    "/.svn", "/.svn/entries",
+    "/.htaccess", "/.htpasswd",
+    "/web.config",
+    "/.aws/credentials", "/.aws/config",
+    "/.ssh/id_rsa", "/.ssh/id_dsa", "/.ssh/authorized_keys",
+    "/.bash_history", "/.bashrc",
+    "/admin", "/admin/", "/admin/login",
+    "/wp-admin", "/wp-admin/", "/wp-login.php",
+    "/administrator", "/administrator/",
+    "/phpmyadmin", "/phpmyadmin/", "/pma",
+    "/cpanel",
+    "/actuator", "/actuator/env", "/actuator/health",
+    "/swagger", "/swagger-ui", "/swagger-ui.html", "/api-docs",
+    "/backup", "/backups", "/backup.sql", "/dump.sql",
+    "/server-status", "/server-info",
+}
+
+SUSPICIOUS_EXTENSIONS = (
+    ".bak", ".backup", ".old", ".orig", ".save",
+    ".sql", ".tar", ".tar.gz", ".tgz", ".zip", ".dump"
+)
+
+def check_explicit_suspicious_path(path: str) -> Optional[str]:
+    """Check if requested path targets known sensitive files or discovery endpoints."""
+    if not path or not isinstance(path, str):
+        return None
+    clean = path.split("?")[0].split("#")[0].strip().lower()
+    if not clean.startswith("/"):
+        clean = "/" + clean
+    clean_no_slash = clean.rstrip("/") if len(clean) > 1 else clean
+
+    if clean in SUSPICIOUS_PATHS or clean_no_slash in SUSPICIOUS_PATHS:
+        return f"Explicit sensitive discovery target: {clean}"
+
+    for ext in SUSPICIOUS_EXTENSIONS:
+        if clean.endswith(ext):
+            return f"Suspicious backup/dump extension ({ext}): {clean}"
+
+    if ".." in clean:
+        return f"Directory traversal probe sequence: {clean}"
+
+    return None
+
+def get_dir_fuzz_max_sources() -> int:
+    """Return configured maximum tracked source IPs in memory (default: 1000)."""
+    val = app.config.get("DIR_FUZZ_MAX_SOURCES") or os.getenv("DIR_FUZZ_MAX_SOURCES", "1000")
+    try:
+        m = int(val)
+        if m >= 1:
+            return m
+    except (ValueError, TypeError):
+        pass
+    return 1000
+
+class DirectoryProbeTracker:
+    """Thread-safe sliding-window tracker for repeated distinct path 404 probes per source IP."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._probes: Dict[str, List[Tuple[float, str]]] = {}
+        self._seen_events: Dict[str, float] = {}
+
+    def record_probe(
+        self,
+        source_ip: str,
+        path: str,
+        threshold: int,
+        window_seconds: int,
+        event_id: Optional[str] = None,
+        current_time: Optional[float] = None,
+        max_sources: Optional[int] = None
+    ) -> Tuple[bool, int, str]:
+        now_ts = time.time() if current_time is None else float(current_time)
+        clean_path = (path or "").split("?")[0].split("#")[0].strip().lower()
+        if not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
+
+        max_src = max_sources or get_dir_fuzz_max_sources()
+
+        with self._lock:
+            cutoff = now_ts - window_seconds
+            # Prune expired seen events
+            self._seen_events = {eid: ts for eid, ts in self._seen_events.items() if ts >= cutoff}
+
+            # Check if this exact event_id was already tracked for probes
+            if event_id and str(event_id) in self._seen_events:
+                history = self._probes.get(source_ip, [])
+                valid_history = [(ts, p) for ts, p in history if ts >= cutoff]
+                distinct_paths = {p for _, p in valid_history}
+                count = len(distinct_paths)
+                is_attack = count >= threshold
+                reason = "Duplicate event_id already tracked"
+                return is_attack, count, reason
+
+            if event_id:
+                self._seen_events[str(event_id)] = now_ts
+
+            # Capacity limit & LRU pruning for source IPs
+            history = self._probes.get(source_ip, [])
+            valid_history = [(ts, p) for ts, p in history if ts >= cutoff]
+
+            if source_ip not in self._probes and len(self._probes) >= max_src:
+                stale_ips = [ip for ip, hist in self._probes.items() if not any(ts >= cutoff for ts, _ in hist)]
+                for sip in stale_ips:
+                    del self._probes[sip]
+                if len(self._probes) >= max_src:
+                    oldest_ip = min(self._probes.keys(), key=lambda k: max((t for t, _ in self._probes[k]), default=0))
+                    del self._probes[oldest_ip]
+
+            valid_history.append((now_ts, clean_path))
+            self._probes[source_ip] = valid_history
+
+            distinct_paths = {p for _, p in valid_history}
+            count = len(distinct_paths)
+
+            if count >= threshold:
+                sample = ", ".join(sorted(distinct_paths)[:4])
+                reason = f"Threshold exceeded: {count} distinct 404 path probes within {window_seconds}s (probed: {sample})"
+                return True, count, reason
+            else:
+                reason = f"Below threshold: {count}/{threshold} distinct path probes within {window_seconds}s"
+                return False, count, reason
+
+    def clear(self):
+        with self._lock:
+            self._probes.clear()
+            self._seen_events.clear()
+
+probe_tracker = DirectoryProbeTracker()
+
+def reset_dir_fuzz_tracker():
+    """Reset the directory probe tracker state (used for testing and lifecycle resets)."""
+    probe_tracker.clear()
 
 def validate_startup_config():
     """
@@ -160,6 +349,14 @@ EVENT_NORMALIZATION = {
     "DIRECTORY_FUZZING": "DIR_FUZZ",
     "DIRECTORY_BRUTEFORCE": "DIR_FUZZ",
     "DIR-FUZZ": "DIR_FUZZ",
+    "DIRECTORY_DISCOVERY": "DIR_FUZZ",
+    "DIR_PROBE": "DIR_FUZZ",
+    "DIR_SCAN": "DIR_FUZZ",
+    "DIRECTORY_SCAN": "DIR_FUZZ",
+    "SUSPICIOUS_PATH": "DIR_FUZZ",
+    "HTTP_404": "HTTP_404",
+    "NOT_FOUND": "HTTP_404",
+    "404": "HTTP_404",
     # PATH_TRAVERSAL
     "PATH_TRAVERSAL": "PATH_TRAVERSAL",
     "DIRECTORY_TRAVERSAL": "PATH_TRAVERSAL",
@@ -229,7 +426,8 @@ def init_db(db_path=None):
         CREATE TABLE IF NOT EXISTS alerts(
           id INTEGER PRIMARY KEY, event_id TEXT UNIQUE, source_ip TEXT NOT NULL,
           signature TEXT NOT NULL, severity TEXT NOT NULL, timestamp TEXT NOT NULL,
-          message TEXT NOT NULL DEFAULT '', mitre_id TEXT, incident_id INTEGER);
+          message TEXT NOT NULL DEFAULT '', mitre_id TEXT, incident_id INTEGER,
+          http_method TEXT, requested_path TEXT, response_status INTEGER, detection_reason TEXT);
         CREATE INDEX IF NOT EXISTS idx_alerts_mitre ON alerts(mitre_id);
         CREATE INDEX IF NOT EXISTS idx_alerts_source ON alerts(source_ip);
 
@@ -271,6 +469,20 @@ def init_db(db_path=None):
           note_type TEXT NOT NULL DEFAULT 'ANALYST_NOTE' CHECK(note_type IN ('ANALYST_NOTE','STATUS_CHANGE','CLASSIFICATION','CONTAINMENT_REQUEST','SYSTEM'))
         );
         CREATE INDEX IF NOT EXISTS idx_notes_incident ON incident_notes(incident_id);
+
+        CREATE TABLE IF NOT EXISTS reports(
+          report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          incident_id INTEGER REFERENCES incidents(incident_id) ON DELETE SET NULL,
+          title TEXT NOT NULL,
+          report_type TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          findings TEXT NOT NULL,
+          date_range TEXT,
+          author TEXT NOT NULL DEFAULT 'SOC_ANALYST',
+          created_at TEXT NOT NULL,
+          content_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_reports_incident ON reports(incident_id);
         """)
 
         # Safe migration: ensure incident_id column exists on alerts
@@ -278,6 +490,16 @@ def init_db(db_path=None):
         if "incident_id" not in cols:
             c.execute("ALTER TABLE alerts ADD COLUMN incident_id INTEGER REFERENCES incidents(incident_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_incident ON alerts(incident_id)")
+
+        # Safe migration: ensure HTTP and detection metadata columns exist on alerts
+        for col_name, col_type in [
+            ("http_method", "TEXT"),
+            ("requested_path", "TEXT"),
+            ("response_status", "INTEGER"),
+            ("detection_reason", "TEXT"),
+        ]:
+            if col_name not in cols:
+                c.execute(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_type}")
 
         # Safe migration: link any unlinked historical alerts into incidents
         unlinked = c.execute("SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id FROM alerts WHERE incident_id IS NULL ORDER BY id ASC").fetchall()
@@ -380,6 +602,12 @@ def ingest():
         return jsonify(error=f"Invalid 'source_ip': {str(e)}"), 400
 
     raw_sig = d.get("signature") or d.get("alert_type") or d.get("event_type")
+    # If no explicit signature/alert_type/event_type, check response status code for 404
+    if not raw_sig:
+        raw_status = d.get("response_status") if "response_status" in d else (d.get("status_code") if "status_code" in d else d.get("status"))
+        if str(raw_status).strip() in ("404",):
+            raw_sig = "HTTP_404"
+
     if not raw_sig or not isinstance(raw_sig, str) or not raw_sig.strip():
         return jsonify(error="Missing required field: 'signature', 'alert_type', or 'event_type'"), 400
 
@@ -394,25 +622,120 @@ def ingest():
             message="Operational telemetry acknowledged; no security alert recorded"
         ), 202
 
-    sig = EVENT_NORMALIZATION.get(cleaned_sig)
-    if not sig or sig not in REGISTRY:
-        app.logger.warning(f"Ingestion rejected from {source}: Unsupported signature '{raw_sig}'")
-        return jsonify(
-            error=f"Unsupported signature '{raw_sig}'. Must map to registered detection types: {list(REGISTRY.keys())}"
-        ), 400
+    # Extract HTTP telemetry fields
+    http_method = str(d.get("method") or d.get("http_method") or "GET").upper().strip()[:10]
+    requested_path = str(d.get("path") or d.get("url") or d.get("requested_path") or "").strip()[:512]
+    try:
+        raw_status = d.get("response_status") if "response_status" in d else (d.get("status_code") if "status_code" in d else d.get("status"))
+        if raw_status is not None:
+            parsed_status = int(raw_status)
+            if 100 <= parsed_status <= 599:
+                response_status = parsed_status
+            else:
+                response_status = None
+        else:
+            response_status = 404 if "404" in cleaned_sig else None
+    except (ValueError, TypeError):
+        response_status = None
+    detection_reason = str(d.get("reason") or d.get("detection_reason") or "").strip()[:512]
 
-    raw_sev = d.get("severity", "medium")
+    # Validate event_id format if provided
+    raw_event_id = d.get("event_id")
+    if raw_event_id is not None and not isinstance(raw_event_id, (str, int)):
+        return jsonify(error="Field 'event_id' must be a string or integer"), 400
+    event_id = str(raw_event_id or secrets.token_hex(16))[:64]
+
+    # Early idempotency check: if event_id already exists in alerts table, return existing record
+    if raw_event_id is not None:
+        try:
+            with db() as c:
+                existing = c.execute(
+                    "SELECT event_id, incident_id, mitre_id, signature FROM alerts WHERE event_id=?",
+                    (event_id,)
+                ).fetchone()
+                if existing:
+                    app.logger.info(f"Duplicate event_id '{event_id}' safely deduplicated (idempotent)")
+                    return jsonify(
+                        status="accepted",
+                        event_id=existing["event_id"],
+                        mitre_id=existing["mitre_id"],
+                        signature=existing["signature"],
+                        incident_id=existing["incident_id"]
+                    ), 202
+        except sqlite3.Error as e:
+            return jsonify(error=f"Database persistence error: {str(e)}"), 500
+
+    # Handle Directory Discovery (DIR_FUZZ) & HTTP 404 Probing Logic
+    is_dir_fuzz_candidate = (
+        cleaned_sig in ("HTTP_404", "NOT_FOUND", "404", "DIR_PROBE", "DIRECTORY_DISCOVERY", "SUSPICIOUS_PATH")
+        or (cleaned_sig in ("DIR_FUZZ", "DIR_FUZZING", "DIRECTORY_FUZZ", "DIRECTORY_FUZZING", "DIRECTORY_BRUTEFORCE", "DIR-FUZZ") and requested_path)
+    )
+
+    if is_dir_fuzz_candidate:
+        # False-positive safeguard: exclude benign assets
+        if is_benign_path(requested_path):
+            app.logger.info(f"Benign path probe '{requested_path}' from {source} ignored (false-positive safeguard)")
+            return jsonify(
+                status="accepted",
+                event_type="benign_path_suppressed",
+                message="Benign path probe ignored (false-positive safeguard); no security alert recorded"
+            ), 202
+
+        # 1. Immediate trigger: check explicit suspicious path
+        explicit_reason = check_explicit_suspicious_path(requested_path)
+        if explicit_reason:
+            sig = "DIR_FUZZ"
+            detection_reason = detection_reason or explicit_reason
+            if "severity" not in d:
+                clean_lower = requested_path.lower()
+                if any(k in clean_lower for k in ("/.env", "/.git", "credentials", "id_rsa", "backup.sql")):
+                    raw_sev = "high"
+                else:
+                    raw_sev = "medium"
+            else:
+                raw_sev = d.get("severity", "medium")
+        elif cleaned_sig in ("HTTP_404", "NOT_FOUND", "404", "DIR_PROBE"):
+            # 2. Threshold trigger: check repeated distinct 404 path probes
+            threshold = get_dir_fuzz_threshold()
+            window = get_dir_fuzz_window()
+            is_attack, count, tracker_reason = probe_tracker.record_probe(
+                source, requested_path, threshold, window, event_id=raw_event_id
+            )
+            if is_attack:
+                sig = "DIR_FUZZ"
+                detection_reason = detection_reason or tracker_reason
+                raw_sev = d.get("severity", "medium")
+            else:
+                # Below threshold: acknowledge without attack alert
+                app.logger.info(f"404 probe from {source} for '{requested_path}' below threshold ({count}/{threshold})")
+                return jsonify(
+                    status="accepted",
+                    event_type="probe_recorded",
+                    distinct_probes=count,
+                    threshold=threshold,
+                    message=f"Probe recorded ({count}/{threshold} in window); below threshold, no security alert recorded"
+                ), 202
+        else:
+            # Client specified DIR_FUZZ with non-benign path
+            sig = "DIR_FUZZ"
+            detection_reason = detection_reason or f"Directory fuzzing probe targeting {requested_path}"
+            raw_sev = d.get("severity", "medium")
+    else:
+        sig = EVENT_NORMALIZATION.get(cleaned_sig)
+        if not sig or sig not in REGISTRY:
+            app.logger.warning(f"Ingestion rejected from {source}: Unsupported signature '{raw_sig}'")
+            return jsonify(
+                error=f"Unsupported signature '{raw_sig}'. Must map to registered detection types: {list(REGISTRY.keys())}"
+            ), 400
+        raw_sev = d.get("severity", "medium")
+
+    # Validate severity
     if not isinstance(raw_sev, str):
         return jsonify(error="Field 'severity' must be a string"), 400
     severity = raw_sev.lower().strip()
     if severity not in ("info", "low", "medium", "high", "critical"):
         app.logger.warning(f"Ingestion rejected from {source}: Invalid severity '{raw_sev}'")
         return jsonify(error=f"Invalid 'severity' '{raw_sev}'. Must be one of ('info', 'low', 'medium', 'high', 'critical')"), 400
-
-    raw_event_id = d.get("event_id")
-    if raw_event_id is not None and not isinstance(raw_event_id, (str, int)):
-        return jsonify(error="Field 'event_id' must be a string or integer"), 400
-    event_id = str(raw_event_id or secrets.token_hex(16))[:64]
 
     raw_ts = d.get("timestamp")
     if raw_ts is not None and not isinstance(raw_ts, str):
@@ -422,15 +745,34 @@ def ingest():
     raw_msg = d.get("message")
     if raw_msg is not None and not isinstance(raw_msg, str):
         return jsonify(error="Field 'message' must be a string"), 400
-    msg = str(raw_msg or "")[:2048]
+
+    # Build structured message preserving original telemetry metadata
+    details = []
+    if http_method: details.append(f"method={http_method}")
+    if requested_path: details.append(f"path={requested_path}")
+    if response_status: details.append(f"status={response_status}")
+    if detection_reason: details.append(f"reason={detection_reason}")
+
+    if raw_msg:
+        msg = str(raw_msg)[:2048]
+    elif details:
+        msg = f"{REGISTRY[sig][1]} probe detected ({'; '.join(details)})"[:2048]
+    else:
+        msg = ""
 
     mitre = REGISTRY[sig][0]
     try:
         with db() as c:
-            # 1. Insert alert
+            # 1. Insert alert with extended HTTP telemetry columns
             c.execute("""INSERT OR IGNORE INTO alerts
-              (event_id,source_ip,signature,severity,timestamp,message,mitre_id)
-              VALUES(?,?,?,?,?,?,?)""", (event_id, source, sig, severity, ts, msg, mitre))
+              (event_id,source_ip,signature,severity,timestamp,message,mitre_id,
+               http_method,requested_path,response_status,detection_reason)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+              (event_id, source, sig, severity, ts, msg, mitre,
+               http_method if requested_path else None,
+               requested_path if requested_path else None,
+               response_status,
+               detection_reason if detection_reason else None))
 
             # 2. Correlate to existing open incident or create new incident
             inc_row = c.execute("""
@@ -685,14 +1027,16 @@ def get_incident_details(incident_id):
 
         # Primary and linked alerts
         alert_rows = c.execute("""
-            SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id
+            SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id,
+                   http_method, requested_path, response_status, detection_reason
             FROM alerts WHERE incident_id = ? ORDER BY id DESC
         """, (incident_id,)).fetchall()
         alerts = [dict(a) for a in alert_rows]
 
         # Related alerts (same source_ip or signature from other incidents or unlinked)
         related_rows = c.execute("""
-            SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id, incident_id
+            SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id, incident_id,
+                   http_method, requested_path, response_status, detection_reason
             FROM alerts
             WHERE (source_ip = ? OR signature = ?) AND (incident_id IS NULL OR incident_id != ?)
             ORDER BY id DESC LIMIT 15
@@ -863,6 +1207,107 @@ def add_incident_note(incident_id):
         c.execute("UPDATE incidents SET updated_at = ? WHERE incident_id = ?", (now(), incident_id))
 
     return jsonify(status="success", note_id=note_id, incident_id=incident_id), 201
+
+@app.get("/api/soc/alerts")
+@auth("analyst")
+def list_alerts():
+    severity_filter = request.args.get("severity", "").lower().strip()
+    source_filter = request.args.get("source_ip", "").strip()
+    sig_filter = request.args.get("signature", "").upper().strip()
+    limit = min(int(request.args.get("limit", 100)), 500)
+
+    query = """
+        SELECT a.id, a.event_id, a.source_ip, a.signature, a.severity, a.timestamp,
+               a.message, a.mitre_id, a.incident_id, a.http_method, a.requested_path,
+               a.response_status, a.detection_reason,
+               i.title AS incident_title, i.status AS incident_status
+        FROM alerts a
+        LEFT JOIN incidents i ON a.incident_id = i.incident_id
+        WHERE 1=1
+    """
+    params = []
+    if severity_filter and severity_filter != "all":
+        query += " AND a.severity = ?"
+        params.append(severity_filter)
+    if source_filter:
+        query += " AND a.source_ip = ?"
+        params.append(source_filter)
+    if sig_filter and sig_filter != "ALL":
+        query += " AND a.signature = ?"
+        params.append(sig_filter)
+
+    query += " ORDER BY a.id DESC LIMIT ?"
+    params.append(limit)
+
+    with db() as c:
+        rows = c.execute(query, params).fetchall()
+        alerts = []
+        for r in rows:
+            ad = dict(r)
+            sig = ad["signature"]
+            reg = REGISTRY.get(sig, (ad["mitre_id"] or "Unknown", sig, "Unknown"))
+            ad["technique_id"] = reg[0]
+            ad["technique_name"] = reg[1]
+            ad["tactic"] = reg[2]
+            alerts.append(ad)
+
+    return jsonify(status="success", count=len(alerts), alerts=alerts)
+
+@app.get("/api/soc/reports")
+@auth("analyst")
+def list_reports():
+    with db() as c:
+        rows = c.execute("""
+            SELECT r.*, i.title as incident_title, i.severity as incident_severity, i.status as incident_status
+            FROM reports r
+            LEFT JOIN incidents i ON r.incident_id = i.incident_id
+            ORDER BY r.report_id DESC
+        """).fetchall()
+        reports = [dict(r) for r in rows]
+    return jsonify(status="success", count=len(reports), reports=reports)
+
+@app.post("/api/soc/reports")
+@auth("analyst")
+def create_report():
+    d = request.get_json(silent=True) or {}
+    title = str(d.get("title", "")).strip()[:200]
+    report_type = str(d.get("report_type", "")).strip()[:100]
+    summary = str(d.get("summary", "")).strip()[:4000]
+    findings = str(d.get("findings", "")).strip()[:4000]
+    date_range = str(d.get("date_range", "")).strip()[:100]
+    incident_id = d.get("incident_id")
+    metadata_val = d.get("metadata", {})
+    content_json = json.dumps(metadata_val) if isinstance(metadata_val, dict) else "{}"
+
+    if not title:
+        return jsonify(error="Report title is required"), 400
+    if not report_type:
+        return jsonify(error="Report type is required"), 400
+    if not summary:
+        return jsonify(error="Executive summary is required"), 400
+
+    if incident_id is not None and str(incident_id).strip() != "":
+        try:
+            incident_id = int(incident_id)
+        except (ValueError, TypeError):
+            incident_id = None
+    else:
+        incident_id = None
+
+    with db() as c:
+        cur = c.execute("""
+            INSERT INTO reports (incident_id, title, report_type, summary, findings, date_range, author, created_at, content_json)
+            VALUES (?, ?, ?, ?, ?, ?, 'SOC_ANALYST', ?, ?)
+        """, (incident_id, title, report_type, summary, findings, date_range, now(), content_json))
+        report_id = cur.lastrowid
+
+        if incident_id:
+            c.execute("""
+                INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                VALUES (?, 'SOC_ANALYST', ?, ?, 'ANALYST_NOTE')
+            """, (incident_id, now(), f"Generated report #{report_id}: '{title}' ({report_type})."))
+
+    return jsonify(status="success", report_id=report_id, message="Report generated and saved successfully"), 201
 
 if __name__ == "__main__":
     init_db()

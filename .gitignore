@@ -67,3 +67,10 @@ dist/
 *.rej
 .mypy_cache/
 .ruff_cache/
+.coverage.*
+coverage.xml
+
+# Node & package artifacts
+node_modules/
+npm-debug.log*
+

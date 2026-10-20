@@ -4,36 +4,60 @@
   // Base API endpoint URL (empty string indicates origin root)
   const base = (window.SOC_API_BASE || "").replace(/\/$/, "");
 
-  // DOM Elements from MITRE component
-  const grid = document.getElementById("mitre-grid");
-  const value = document.getElementById("resilience-value");
-  const detail = document.getElementById("resilience-detail");
-  const error = document.getElementById("mitre-error");
+  // =========================================================================
+  // DOM Elements
+  // =========================================================================
 
-  // Layout & Toolbar Elements
-  const tokenInput = document.getElementById("analyst-token-input");
-  const btnSetToken = document.getElementById("btn-set-token");
-  const btnClearToken = document.getElementById("btn-clear-token");
-  const btnToggleToken = document.getElementById("btn-toggle-token");
-  const btnRefresh = document.getElementById("btn-refresh");
+  // Top Bar & Global Layout
+  const clockEl = document.getElementById("soc-clock");
+  const pageBreadcrumbEl = document.getElementById("page-breadcrumb");
   const authStatusBadge = document.getElementById("auth-status-badge");
+  const settingsAuthBadge = document.getElementById("settings-auth-badge");
+  const sidebarAuthIndicator = document.getElementById("sidebar-auth-indicator");
+  const unauthBanner = document.getElementById("unauth-banner");
+  const btnBannerAuth = document.getElementById("btn-banner-auth");
+  const btnQuickToken = document.getElementById("btn-quick-token");
+  const btnRefresh = document.getElementById("btn-refresh");
+  const sidebarToggleBtn = document.getElementById("sidebar-toggle-btn");
+  const sidebarEl = document.querySelector(".soc-sidebar");
+
+  // Nav Badges
+  const sidebarAlertBadge = document.getElementById("sidebar-alert-badge");
+  const sidebarIncBadge = document.getElementById("sidebar-inc-badge");
+  const sidebarActionBadge = document.getElementById("sidebar-action-badge");
+
+  // KPI Elements
   const statResilience = document.getElementById("stat-resilience");
   const statDetected = document.getElementById("stat-detected");
   const statMitigated = document.getElementById("stat-mitigated");
   const statTotal = document.getElementById("stat-total");
-  const clockEl = document.getElementById("soc-clock");
 
-  // Incident Investigation Workbench Elements
+  // MITRE Matrix Elements
+  const grid = document.getElementById("mitre-grid");
+  const gridFull = document.getElementById("mitre-grid-full");
+  const value = document.getElementById("resilience-value");
+  const detail = document.getElementById("resilience-detail");
+  const error = document.getElementById("mitre-error");
+
+  // Alerts Page Elements
+  const alertsGrid = document.getElementById("alerts-grid");
+  const alertsSearchInput = document.getElementById("alerts-search-input");
+  const alertsSigFilter = document.getElementById("alerts-sig-filter");
+  const countSevAll = document.getElementById("count-sev-all");
+  const btnToggleFocus = document.getElementById("btn-toggle-focus");
+  const focusBtnLabel = document.getElementById("focus-btn-label");
+  const btnRefreshAlerts = document.getElementById("btn-refresh-alerts");
+
+  // Investigations Queue Elements
   const incidentsListEl = document.getElementById("incidents-list");
   const queueCountBadgeEl = document.getElementById("queue-count-badge");
-  const detailsEmptyEl = document.getElementById("incident-details-empty");
-  const detailsContentEl = document.getElementById("incident-details-content");
-  const btnRefreshIncidents = document.getElementById("btn-refresh-incidents");
   const filterAllBtn = document.getElementById("filter-all");
   const filterOpenBtn = document.getElementById("filter-open");
   const filterClosedBtn = document.getElementById("filter-closed");
 
-  // Detail Fields
+  // Dedicated Incident Details Workbench Elements
+  const detailsEmptyEl = document.getElementById("incident-details-empty");
+  const detailsContentEl = document.getElementById("incident-details-content");
   const detailIncidentId = document.getElementById("detail-incident-id");
   const detailIncidentTitle = document.getElementById("detail-incident-title");
   const detailSeverityBadge = document.getElementById("detail-severity-badge");
@@ -48,12 +72,27 @@
   const detailClosedRationale = document.getElementById("detail-closed-rationale");
   const workflowStepper = document.getElementById("workflow-stepper");
 
-  // Workflow Action Buttons
+  // Summary KPI Cards in Incident Details
+  const summaryAlertCount = document.getElementById("summary-alert-count");
+  const summaryMitigatedCount = document.getElementById("summary-mitigated-count");
+  const summaryStatusVal = document.getElementById("summary-status-val");
+  const summaryActionCount = document.getElementById("summary-action-count");
+
+  // Incident Navigation & Actions
+  const btnBackToAlerts = document.getElementById("btn-back-to-alerts");
+  const btnBackToInvestigations = document.getElementById("btn-back-to-investigations");
+  const btnRefreshIncidentDetail = document.getElementById("btn-refresh-incident-detail");
+  const btnEmptyGotoAlerts = document.getElementById("btn-empty-goto-alerts");
+  const btnEmptyGotoIncidents = document.getElementById("btn-empty-goto-incidents");
+
+  // Workflow Routine Transition Buttons
   const btnWfTriage = document.getElementById("btn-wf-triage");
   const btnWfInvestigating = document.getElementById("btn-wf-investigating");
   const btnWfToggleClassify = document.getElementById("btn-wf-toggle-classify");
   const btnWfRequestBlock = document.getElementById("btn-wf-request-block");
   const btnWfClose = document.getElementById("btn-wf-close");
+  const btnSnapQuickContain = document.getElementById("btn-snap-quick-contain");
+  const btnSnapCreateReport = document.getElementById("btn-snap-create-report");
 
   // Classification Drawer Elements
   const classificationDrawer = document.getElementById("classification-drawer");
@@ -67,28 +106,87 @@
   const evTactic = document.getElementById("ev-tactic");
   const evSignature = document.getElementById("ev-signature");
   const evMessage = document.getElementById("ev-message");
+  const btnCopyTelemetry = document.getElementById("btn-copy-telemetry");
 
-  // Correlated & Related Elements
+  // Correlated Alerts Elements
   const correlatedCount = document.getElementById("correlated-count");
+  const tabCorrelatedCount = document.getElementById("tab-correlated-count");
   const correlatedAlertsBody = document.getElementById("correlated-alerts-body");
-  const incidentActionsContainer = document.getElementById("incident-actions-container");
+
+  // Snapshot Elements
+  const snapContainmentBadge = document.getElementById("snap-containment-badge");
+  const snapEventCount = document.getElementById("snap-event-count");
 
   // Timeline & Notes Elements
   const timelineFeed = document.getElementById("timeline-feed");
   const analystNoteTextarea = document.getElementById("analyst-note-textarea");
   const btnAddNote = document.getElementById("btn-add-note");
+  const incidentNotesFeed = document.getElementById("incident-notes-feed");
+  const notesCountBadge = document.getElementById("notes-count-badge");
+  const noteStatusMsg = document.getElementById("note-status-msg");
 
+  // Response Actions Container
+  const incidentActionsContainer = document.getElementById("incident-actions-container");
+
+  // Reports Elements
+  const reportForm = document.getElementById("report-form");
+  const reportTitleInput = document.getElementById("report-title-input");
+  const reportTypeSelect = document.getElementById("report-type-select");
+  const reportIncidentSelect = document.getElementById("report-incident-select");
+  const reportDateRangeSelect = document.getElementById("report-date-range-select");
+  const reportSummaryInput = document.getElementById("report-summary-input");
+  const reportFindingsInput = document.getElementById("report-findings-input");
+  const btnPreviewReport = document.getElementById("btn-preview-report");
+  const btnSubmitReport = document.getElementById("btn-submit-report");
+  const btnPrintReport = document.getElementById("btn-print-report");
+  const reportFeedbackMsg = document.getElementById("report-feedback-msg");
+  const reportsHistoryBody = document.getElementById("reports-history-body");
+  const btnRefreshReportsList = document.getElementById("btn-refresh-reports-list");
+
+  // Live Report Preview Elements
+  const prevTitle = document.getElementById("prev-title");
+  const prevCategory = document.getElementById("prev-category");
+  const prevDate = document.getElementById("prev-date");
+  const prevIncidentTag = document.getElementById("prev-incident-tag");
+  const prevClassification = document.getElementById("prev-classification");
+  const prevSummary = document.getElementById("prev-summary");
+  const prevFindings = document.getElementById("prev-findings");
+  const prevSourceIp = document.getElementById("prev-source-ip");
+  const prevMitre = document.getElementById("prev-mitre");
+  const prevAlertCount = document.getElementById("prev-alert-count");
+  const prevMitigationStatus = document.getElementById("prev-mitigation-status");
+
+  // Settings & Authentication Elements
+  const tokenInput = document.getElementById("analyst-token-input");
+  const btnSetToken = document.getElementById("btn-set-token");
+  const btnClearToken = document.getElementById("btn-clear-token");
+  const btnToggleToken = document.getElementById("btn-toggle-token");
+  const btnTestAuth = document.getElementById("btn-test-auth");
+
+  // Modal Elements
+  const modalQuickToken = document.getElementById("modal-quick-token");
+  const modalTokenInput = document.getElementById("modal-token-input");
+  const modalBtnSaveToken = document.getElementById("modal-btn-save-token");
+  const modalBtnClearToken = document.getElementById("modal-btn-clear-token");
+  const modalCloseToken = document.getElementById("modal-close-token");
+
+  // Global Toast Container
+  const toastContainer = document.getElementById("toast-container");
+
+  // =========================================================================
   // State
+  // =========================================================================
+  let allAlerts = [];
   let allIncidents = [];
+  let allResponseActions = [];
+  let allReports = [];
   let selectedIncidentId = null;
-  let currentFilter = "ALL";
-
-  // CSS state class mapping matching component
-  const classes = {
-    UNTESTED: "state-gray",
-    DETECTED: "state-amber",
-    MITIGATED: "state-green"
-  };
+  let currentView = "dashboard";
+  let alertSeverityFilter = "ALL";
+  let alertSignatureFilter = "ALL";
+  let alertSearchQuery = "";
+  let focusMode = false;
+  let incidentStatusFilter = "ALL";
 
   const workflowOrder = [
     "NEW",
@@ -101,35 +199,78 @@
     "CLOSED"
   ];
 
-  /**
-   * Helper to update Analyst Session Authentication status badge
-   */
-  function updateAuthBadge(state, message) {
-    if (!authStatusBadge) return;
-    authStatusBadge.className = "auth-badge";
+  // Helper DOM creator
+  function node(tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined && text !== null) el.textContent = text;
+    return el;
+  }
 
-    if (state === "authenticated") {
-      authStatusBadge.classList.add("status-authenticated");
-      authStatusBadge.textContent = "● Authenticated";
-      authStatusBadge.title = message || "Valid analyst token verified";
-    } else if (state === "checking") {
-      authStatusBadge.classList.add("status-checking");
-      authStatusBadge.textContent = "● Verifying...";
-      authStatusBadge.title = "Connecting to backend...";
-    } else if (state === "error") {
-      authStatusBadge.classList.add("status-error");
-      authStatusBadge.textContent = "● Unauthorized (401)";
-      authStatusBadge.title = message || "Invalid or rejected analyst token";
-    } else {
-      authStatusBadge.classList.add("status-unauthenticated");
-      authStatusBadge.textContent = "● Token Not Set";
-      authStatusBadge.title = "Enter ANALYST_TOKEN above to access API";
+  // =========================================================================
+  // Toast & Notifications
+  // =========================================================================
+  function showToast(message, type = "info", duration = 3500) {
+    if (!toastContainer) return;
+    const toast = node("div", `toast toast-${type}`);
+    const icon = type === "success" ? "✓" : (type === "error" ? "✕" : "ℹ");
+    toast.innerHTML = `<span style="font-weight:700;margin-right:6px;">${icon}</span><span>${message}</span>`;
+    toastContainer.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateY(8px)";
+      toast.style.transition = "all 0.3s ease";
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+
+  // =========================================================================
+  // Authentication & API Request Handler
+  // =========================================================================
+  function updateAuthBadge(state, message) {
+    const badgeMap = [
+      { el: authStatusBadge, defaultText: "● Token Not Set" },
+      { el: settingsAuthBadge, defaultText: "● Token Not Set" }
+    ];
+
+    badgeMap.forEach(({ el, defaultText }) => {
+      if (!el) return;
+      el.className = "auth-badge";
+      if (state === "authenticated") {
+        el.classList.add("status-authenticated");
+        el.textContent = "● Authenticated";
+        el.title = message || "Valid analyst token verified";
+      } else if (state === "checking") {
+        el.classList.add("status-checking");
+        el.textContent = "● Verifying...";
+        el.title = "Connecting to backend...";
+      } else if (state === "error") {
+        el.classList.add("status-error");
+        el.textContent = "● Unauthorized (401)";
+        el.title = message || "Invalid or rejected analyst token";
+      } else {
+        el.classList.add("status-unauthenticated");
+        el.textContent = defaultText;
+        el.title = "Enter ANALYST_TOKEN to access API";
+      }
+    });
+
+    if (sidebarAuthIndicator) {
+      if (state === "authenticated") {
+        sidebarAuthIndicator.textContent = "Authenticated";
+        sidebarAuthIndicator.className = "session-status status-dot-online";
+      } else {
+        sidebarAuthIndicator.textContent = state === "error" ? "Auth Failed" : "Token Not Set";
+        sidebarAuthIndicator.className = "session-status status-dot-offline";
+      }
+    }
+
+    if (unauthBanner) {
+      unauthBanner.hidden = (state === "authenticated");
     }
   }
 
-  /**
-   * Execute authenticated API request via Bearer header.
-   */
   async function api(path, opts = {}) {
     const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
 
@@ -148,164 +289,346 @@
       let serverErrorMsg = "";
       try {
         const errJson = await response.json();
-        if (errJson && errJson.error) {
-          serverErrorMsg = errJson.error;
-        }
-      } catch (_) {}
-
-      if (response.status === 401) {
-        const detail = serverErrorMsg ? `: ${serverErrorMsg}` : "";
-        throw Error(`Unauthorized (401)${detail}. Set ANALYST_TOKEN in the toolbar above.`);
+        serverErrorMsg = errJson.error || errJson.message || "";
+      } catch {
+        serverErrorMsg = response.statusText;
       }
-
-      if (response.status === 503) {
-        throw Error(`Service Unavailable (503): Backend authentication is not configured.`);
-      }
-
-      const detail = serverErrorMsg ? `: ${serverErrorMsg}` : `HTTP status ${response.status}`;
-      throw Error(`API Request Failed (${response.status}): ${detail}`);
+      const err = new Error(serverErrorMsg || `HTTP ${response.status}`);
+      err.status = response.status;
+      throw err;
     }
 
     return response.json();
   }
 
-  function node(tag, cls, txt) {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (txt !== undefined) n.textContent = txt;
-    return n;
+  // =========================================================================
+  // Single-Page View Router
+  // =========================================================================
+  function switchView(targetView, param = null) {
+    currentView = targetView;
+
+    // Hide all view sections
+    const views = document.querySelectorAll(".soc-view");
+    views.forEach(v => {
+      v.hidden = true;
+      v.classList.remove("active");
+    });
+
+    // Update active nav link
+    const navLinks = document.querySelectorAll(".nav-link");
+    navLinks.forEach(nl => nl.classList.remove("active"));
+
+    const matchingNav = document.getElementById(`nav-${targetView}`);
+    if (matchingNav) matchingNav.classList.add("active");
+
+    // Show target view section
+    const targetSection = document.getElementById(`view-${targetView}`);
+    if (targetSection) {
+      targetSection.hidden = false;
+      targetSection.classList.add("active");
+    }
+
+    // Update Breadcrumb
+    const breadcrumbTitles = {
+      dashboard: "Dashboard",
+      alerts: "Alerts",
+      investigations: "Incident Investigations",
+      "incident-detail": param ? `Incident #${param}` : "Incident Workbench",
+      trends: "Threat Intelligence & Trends",
+      mitre: "MITRE ATT&CK Matrix",
+      actions: "SOAR Response Actions",
+      reports: "Security Reports",
+      settings: "System Settings"
+    };
+
+    if (pageBreadcrumbEl) {
+      pageBreadcrumbEl.textContent = breadcrumbTitles[targetView] || targetView.toUpperCase();
+    }
+
+    // Hash handling
+    let newHash = targetView;
+    if (targetView === "incident-detail" && param) {
+      newHash = `incident/${param}`;
+    }
+    if (window.location.hash.replace("#", "") !== newHash) {
+      window.location.hash = newHash;
+    }
+
+    // View-specific initialization triggers
+    if (targetView === "incident-detail" && param) {
+      selectedIncidentId = parseInt(param, 10);
+      loadIncidentDetails(selectedIncidentId, true);
+    } else if (targetView === "alerts") {
+      fetchAlerts();
+    } else if (targetView === "investigations") {
+      fetchIncidents();
+    } else if (targetView === "reports") {
+      fetchReports();
+      populateReportIncidentSelect();
+      updateReportPreview();
+    } else if (targetView === "trends") {
+      renderTrends();
+    } else if (targetView === "actions") {
+      renderAllActionsTable();
+    }
+
+    // Close mobile sidebar if open
+    if (sidebarEl && sidebarEl.classList.contains("open")) {
+      sidebarEl.classList.remove("open");
+    }
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function handleHashChange() {
+    const rawHash = (window.location.hash || "").replace(/^#\/?/, "");
+    if (!rawHash || rawHash === "dashboard") {
+      switchView("dashboard");
+    } else if (rawHash.startsWith("incident/")) {
+      const incId = rawHash.split("/")[1];
+      switchView("incident-detail", incId);
+    } else if (rawHash === "alerts") {
+      switchView("alerts");
+    } else if (rawHash === "investigations") {
+      switchView("investigations");
+    } else if (rawHash === "trends") {
+      switchView("trends");
+    } else if (rawHash === "mitre") {
+      switchView("mitre");
+    } else if (rawHash === "actions") {
+      switchView("actions");
+    } else if (rawHash === "reports") {
+      switchView("reports");
+    } else if (rawHash === "settings") {
+      switchView("settings");
+    } else {
+      switchView("dashboard");
+    }
+  }
+
+  window.addEventListener("hashchange", handleHashChange);
+
+  // =========================================================================
+  // Severity & Status Badge Helpers
+  // =========================================================================
   function getSeverityClass(sev) {
-    const s = String(sev || "").toLowerCase();
-    if (s === "critical") return "badge-severity-critical";
-    if (s === "high") return "badge-severity-high";
-    if (s === "medium") return "badge-severity-medium";
-    if (s === "low") return "badge-severity-low";
-    return "badge-severity-medium";
+    switch (String(sev || "").toLowerCase().trim()) {
+      case "critical": return "badge-critical";
+      case "high": return "badge-high";
+      case "medium": return "badge-medium";
+      case "low": return "badge-low";
+      case "info": return "badge-info";
+      default: return "badge-neutral";
+    }
   }
 
-  function getStatusBadgeClass(st) {
-    const s = String(st || "").toUpperCase();
-    if (s === "CONTAINED" || s === "VERIFIED") return "badge-status-contained";
-    if (s === "CLOSED") return "badge-status-closed";
-    if (s === "CONTAINMENT_PENDING_APPROVAL" || s === "RESPONSE_REQUESTED" || s === "PENDING") return "badge-status-pending";
-    if (s === "INVESTIGATING" || s === "CLASSIFIED" || s === "TRIAGE" || s === "APPROVED") return "badge-status-active";
-    if (s === "EXECUTED" || s === "DRY_RUN") return "badge-status-executed";
-    return "badge-status-new";
+  function getStatusBadgeClass(status) {
+    switch (String(status || "").toUpperCase().trim()) {
+      case "NEW": return "badge-neutral";
+      case "TRIAGE": return "badge-amber";
+      case "INVESTIGATING": return "badge-purple";
+      case "CLASSIFIED": return "badge-purple";
+      case "RESPONSE_REQUESTED": return "badge-amber";
+      case "CONTAINMENT_PENDING_APPROVAL": return "badge-amber";
+      case "CONTAINED": return "badge-verified";
+      case "CLOSED": return "badge-neutral";
+      case "APPROVED": return "badge-purple";
+      case "EXECUTED": return "badge-amber";
+      case "VERIFIED": return "badge-verified";
+      case "PENDING": return "badge-amber";
+      default: return "badge-neutral";
+    }
   }
 
-  /**
-   * SOAR Containment / Rollback Action Request
-   */
-  async function requestAction(item, op, explicitIp = null, explicitIncId = null) {
-    if (!window.SOC_ANALYST_TOKEN) {
-      alert("Authentication required: Please set your Analyst Token above before submitting response actions.");
-      if (tokenInput) tokenInput.focus();
+  function getRelativeTime(timestamp) {
+    if (!timestamp) return "Unknown";
+    try {
+      const date = new Date(timestamp.endsWith("Z") ? timestamp : timestamp + "Z");
+      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (diffSec < 60) return "Just now";
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+      return `${Math.floor(diffSec / 86400)}d ago`;
+    } catch {
+      return timestamp;
+    }
+  }
+
+  // =========================================================================
+  // ALERTS PAGE: Card-Based Responsive Grid & Filtering
+  // =========================================================================
+  async function fetchAlerts() {
+    if (!alertsGrid) return;
+    try {
+      const data = await api("/api/soc/alerts?limit=200");
+      allAlerts = data.alerts || [];
+    } catch {
+      // Fallback: build alert collection from incidents if /api/soc/alerts fails or token expired
+      allAlerts = [];
+      allIncidents.forEach(inc => {
+        if (inc.correlated_alerts) {
+          allAlerts.push(...inc.correlated_alerts);
+        }
+      });
+    }
+
+    if (sidebarAlertBadge) {
+      sidebarAlertBadge.textContent = allAlerts.length;
+    }
+    if (countSevAll) {
+      countSevAll.textContent = allAlerts.length;
+    }
+
+    renderAlertsGrid();
+  }
+
+  function renderAlertsGrid() {
+    if (!alertsGrid) return;
+    alertsGrid.replaceChildren();
+
+    const filtered = allAlerts.filter(a => {
+      // Severity filter
+      if (alertSeverityFilter !== "ALL" && String(a.severity).toUpperCase() !== alertSeverityFilter) {
+        return false;
+      }
+      // Signature filter
+      if (alertSignatureFilter !== "ALL" && a.signature !== alertSignatureFilter) {
+        return false;
+      }
+      // Search query
+      if (alertSearchQuery) {
+        const q = alertSearchQuery.toLowerCase();
+        const matchIp = (a.source_ip || "").toLowerCase().includes(q);
+        const matchSig = (a.signature || "").toLowerCase().includes(q);
+        const matchMsg = (a.message || "").toLowerCase().includes(q);
+        const matchTech = (a.technique_name || "").toLowerCase().includes(q);
+        const matchPath = (a.requested_path || "").toLowerCase().includes(q);
+        if (!matchIp && !matchSig && !matchMsg && !matchTech && !matchPath) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      alertsGrid.innerHTML = `
+        <div class="empty-state-card" style="grid-column: span 2; padding: 40px; text-align: center;">
+          <p class="muted">No alerts match the selected filters or query.</p>
+        </div>
+      `;
       return;
     }
 
-    const opLabel = op === "block" ? "Request containment block" : "Request containment unblock";
-    const targetIp = explicitIp || prompt(`Enter authorized target IPv4 address for ${opLabel}:`);
-    if (!targetIp || !targetIp.trim()) return;
+    for (const alert of filtered) {
+      const card = node("article", `alert-item-card${focusMode ? " focus-compact" : ""}`);
+      card.setAttribute("data-event-id", alert.event_id || "");
 
-    try {
-      const endpoint = op === "block" ? "/api/soc/mitigate/block" : "/api/soc/mitigate/unblock";
-      const payload = { target_ip: targetIp.trim() };
-      if (item && item.signature) payload.signature = item.signature;
-      if (explicitIncId) payload.incident_id = explicitIncId;
+      // Top Row: Severity, Source, Relative Time
+      const top = node("div", "alert-card-header");
+      const leftTop = node("div", "d-flex align-center gap-8");
+      leftTop.style.display = "flex";
+      leftTop.style.alignItems = "center";
+      leftTop.style.gap = "8px";
+      leftTop.append(node("span", `badge ${getSeverityClass(alert.severity)}`, String(alert.severity || "medium").toUpperCase()));
+      leftTop.append(node("span", "alert-source-type", alert.signature || "SUSPICIOUS"));
+      top.append(leftTop);
 
-      const r = await api(endpoint, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-      alert(`Action #${r.action_id} successfully queued with status '${r.status}'.\nNote: This queues approval for containment; verification must be confirmed via host nftables.`);
-      refresh();
-      if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
-    } catch (e) {
-      alert(`Containment request failed:\n${e.message}`);
-    }
-  }
-
-  /**
-   * Render MITRE ATT&CK Matrix cards and resilience score
-   */
-  function render(data) {
-    if (!grid) return;
-    grid.replaceChildren();
-
-    const matrix = data.matrix || [];
-
-    if (matrix.length === 0) {
-      grid.append(node("p", "muted", "No MITRE techniques registered in SOC telemetry schema."));
-    }
-
-    for (const item of matrix) {
-      const card = node("article", `mitre-card ${classes[item.state] || "state-gray"}`);
-      const top = node("div", "mitre-card-top");
-      top.append(node("b", "", item.technique_id), node("span", "state-pill", item.state));
+      const timeSpan = node("span", "alert-time-relative", getRelativeTime(alert.timestamp));
+      timeSpan.title = `UTC: ${alert.timestamp}`;
+      top.append(timeSpan);
       card.append(top);
 
-      card.append(node("h3", "", item.technique_name));
-      card.append(node("p", "muted", `${item.tactic} · ${item.signature}`));
-      card.append(node("p", "", `Alerts: ${item.alert_count} · Verified mitigations: ${item.mitigated_count}`));
+      // Alert Title
+      const title = alert.technique_name ? `${alert.technique_name} from ${alert.source_ip}` : (alert.message || "Security Telemetry Alert");
+      card.append(node("h3", "alert-title", title));
 
-      const actions = node("div", "mitre-actions");
-      for (const [label, op] of [["Request containment", "block"], ["Request unblock", "unblock"]]) {
-        const b = node("button", "button", label);
-        b.type = "button";
-        b.addEventListener("click", () => requestAction(item, op));
-        actions.append(b);
+      // Description / Message
+      if (!focusMode && alert.message) {
+        card.append(node("p", "alert-desc", alert.message));
       }
 
-      // Add "Investigate Incidents" button if alerts have been observed
-      if (item.alert_count > 0) {
-        const invBtn = node("button", "button btn-investigate", `Investigate (${item.alert_count} Alerts)`);
-        invBtn.type = "button";
-        invBtn.title = "Jump to incident investigation workbench for this technique";
-        invBtn.addEventListener("click", () => focusIncidentBySignature(item.signature));
-        actions.append(invBtn);
-      }
+      // Metadata Chips (IP, HTTP Method, Path, Status)
+      const chips = node("div", "alert-meta-chips");
+      const ipChip = node("span", "meta-chip meta-chip-ip mono-text", `IP: ${alert.source_ip}`);
+      chips.append(ipChip);
 
-      card.append(actions);
-      grid.append(card);
+      if (alert.http_method) {
+        chips.append(node("span", "meta-chip mono-text", alert.http_method));
+      }
+      if (alert.requested_path) {
+        chips.append(node("span", "meta-chip mono-text", alert.requested_path));
+      }
+      if (alert.response_status) {
+        chips.append(node("span", "meta-chip mono-text", `HTTP ${alert.response_status}`));
+      }
+      if (alert.mitre_id) {
+        chips.append(node("span", "meta-chip", `${alert.mitre_id} (${alert.tactic || "Adversary Tactic"})`));
+      }
+      card.append(chips);
+
+      // Footer: Incident Status & Primary Action Button
+      const footer = node("div", "alert-card-footer");
+      const incInfo = node("span", "alert-inc-status");
+      if (alert.incident_id) {
+        incInfo.innerHTML = `Correlated: <strong style="color:#c7d2fe;">#INC-${alert.incident_id}</strong> ${alert.incident_status ? `(${alert.incident_status})` : ""}`;
+      } else {
+        incInfo.textContent = "Uncorrelated alert";
+      }
+      footer.append(incInfo);
+
+      const actionCluster = node("div", "alert-action-cluster");
+
+      // Copy IP action
+      const copyBtn = node("button", "btn btn-outline btn-xs", "Copy IP");
+      copyBtn.type = "button";
+      copyBtn.title = "Copy Source IP to clipboard";
+      copyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(alert.source_ip).then(() => showToast(`Copied ${alert.source_ip} to clipboard`, "info"));
+      });
+      actionCluster.append(copyBtn);
+
+      // Primary "Investigate / View Details" Action Button
+      const invBtn = node("button", "btn btn-primary btn-sm", "Investigate");
+      invBtn.type = "button";
+      invBtn.title = alert.incident_id ? `Open dedicated dossier for Incident #${alert.incident_id}` : "Investigate correlated incidents";
+      invBtn.addEventListener("click", () => {
+        if (alert.incident_id) {
+          switchView("incident-detail", alert.incident_id);
+        } else {
+          // If no linked incident, find by source_ip or signature
+          const match = allIncidents.find(i => i.source_ip === alert.source_ip) ||
+                        allIncidents.find(i => i.signature === alert.signature);
+          if (match) {
+            switchView("incident-detail", match.incident_id);
+          } else {
+            switchView("investigations");
+          }
+        }
+      });
+      actionCluster.append(invBtn);
+
+      footer.append(actionCluster);
+      card.append(footer);
+
+      alertsGrid.append(card);
     }
-
-    const formattedIndex = data.resilience_index == null ? "N/A" : `${Number(data.resilience_index).toFixed(2)}%`;
-    if (value) value.textContent = formattedIndex;
-    if (detail) detail.textContent = `${data.mitigated_techniques} mitigated / ${data.detected_techniques} detected techniques`;
-
-    if (statResilience) statResilience.textContent = formattedIndex;
-    if (statDetected) statDetected.textContent = data.detected_techniques ?? 0;
-    if (statMitigated) statMitigated.textContent = data.mitigated_techniques ?? 0;
-    if (statTotal) statTotal.textContent = matrix.length;
   }
 
   // =========================================================================
-  // Incident Investigation Workflow Logic
+  // INVESTIGATIONS: Incidents Queue & Dashboard Cards
   // =========================================================================
-
-  /**
-   * Fetch incidents list
-   */
   async function fetchIncidents() {
-    if (!incidentsListEl) return;
     try {
       const data = await api("/api/soc/incidents");
       allIncidents = data.incidents || [];
       if (queueCountBadgeEl) {
         queueCountBadgeEl.textContent = `${allIncidents.length} Incident${allIncidents.length === 1 ? "" : "s"}`;
       }
-      renderIncidentsQueue();
-
-      // Auto-select first incident if none currently selected
-      if (!selectedIncidentId && allIncidents.length > 0) {
-        selectedIncidentId = allIncidents[0].incident_id;
-        loadIncidentDetails(selectedIncidentId);
-      } else if (selectedIncidentId) {
-        // Silently refresh current detail view without collapsing
-        loadIncidentDetails(selectedIncidentId, false);
+      if (sidebarIncBadge) {
+        sidebarIncBadge.textContent = allIncidents.length;
       }
+      renderIncidentsQueue();
+      renderDashboardRecent();
     } catch (e) {
       if (incidentsListEl) {
         incidentsListEl.innerHTML = `<p class="muted p-queue-empty">Unable to load incidents: ${e.message}</p>`;
@@ -313,79 +636,164 @@
     }
   }
 
-  /**
-   * Render the left-hand incidents queue
-   */
   function renderIncidentsQueue() {
     if (!incidentsListEl) return;
     incidentsListEl.replaceChildren();
 
     const filtered = allIncidents.filter(inc => {
-      if (currentFilter === "OPEN") return inc.status !== "CLOSED";
-      if (currentFilter === "CLOSED") return inc.status === "CLOSED";
+      if (incidentStatusFilter === "OPEN") return inc.status !== "CLOSED";
+      if (incidentStatusFilter === "CLOSED") return inc.status === "CLOSED";
       return true;
     });
 
     if (filtered.length === 0) {
-      incidentsListEl.append(node("p", "muted p-queue-empty", "No incidents match the selected filter."));
+      incidentsListEl.innerHTML = '<p class="muted p-queue-empty">No incidents match the selected filter.</p>';
       return;
     }
 
     for (const inc of filtered) {
-      const card = node("div", `incident-queue-card${inc.incident_id === selectedIncidentId ? " selected" : ""}`);
-      card.setAttribute("role", "button");
-      card.setAttribute("tabindex", "0");
+      const card = node("div", "incident-item-card");
+      card.style.background = "var(--bg-card)";
+      card.style.border = "1px solid var(--border-card)";
+      card.style.borderRadius = "var(--radius-lg)";
+      card.style.padding = "18px";
+      card.style.display = "flex";
+      card.style.flexDirection = "column";
+      card.style.gap = "10px";
 
-      const top = node("div", "qcard-top");
-      top.append(node("span", "qcard-id", `#INC-${inc.incident_id}`));
+      const top = node("div", "d-flex justify-between align-center");
+      top.style.display = "flex";
+      top.style.justifyContent = "space-between";
+      top.style.alignItems = "center";
 
-      const badges = node("div", "badge-cluster");
+      const idBadge = node("span", "incident-id-tag", `#INC-${inc.incident_id}`);
+      const badges = node("div", "header-badge-cluster");
       badges.append(node("span", `badge ${getSeverityClass(inc.severity)}`, String(inc.severity || "MEDIUM").toUpperCase()));
       badges.append(node("span", `badge ${getStatusBadgeClass(inc.status)}`, inc.status));
-      top.append(badges);
+      top.append(idBadge, badges);
       card.append(top);
 
-      card.append(node("h4", "qcard-title", inc.title || `${inc.technique_name} from ${inc.source_ip}`));
+      card.append(node("h3", "alert-title", inc.title || `Incident from ${inc.source_ip}`));
 
-      const meta = node("div", "qcard-meta");
-      meta.append(node("span", "mono-text", inc.source_ip || "Not available"));
-      meta.append(node("span", "", `${inc.alert_count} alert${inc.alert_count === 1 ? "" : "s"}`));
+      const meta = node("div", "alert-meta-chips");
+      meta.append(node("span", "meta-chip meta-chip-ip mono-text", `Target: ${inc.source_ip}`));
+      meta.append(node("span", "meta-chip", `${inc.alert_count} Correlated Alert${inc.alert_count === 1 ? "" : "s"}`));
+      meta.append(node("span", "meta-chip mono-text", `Created: ${inc.created_at || "N/A"}`));
       card.append(meta);
 
-      if (inc.latest_action) {
-        const actNote = node("div", "qcard-meta", `⚡ ${inc.latest_action.action_type}: ${inc.latest_action.status}`);
-        actNote.style.color = inc.latest_action.status === "VERIFIED" ? "#16a34a" : (inc.latest_action.status === "PENDING" ? "#d97706" : "#475569");
-        actNote.style.fontWeight = "600";
-        card.append(actNote);
-      }
+      const btm = node("div", "d-flex justify-between align-center");
+      btm.style.display = "flex";
+      btm.style.justifyContent = "space-between";
+      btm.style.alignItems = "center";
+      btm.style.marginTop = "auto";
+      btm.style.paddingTop = "8px";
+      btm.style.borderTop = "1px solid rgba(255,255,255,0.05)";
 
-      card.addEventListener("click", () => {
-        selectedIncidentId = inc.incident_id;
-        renderIncidentsQueue();
-        loadIncidentDetails(inc.incident_id, true);
-      });
+      const tech = node("span", "text-xs muted", `${inc.technique_name || "Unknown"} (${inc.technique_id || "N/A"})`);
+      const openBtn = node("button", "btn btn-primary btn-sm", "Open Dedicated Workbench →");
+      openBtn.type = "button";
+      openBtn.addEventListener("click", () => switchView("incident-detail", inc.incident_id));
+
+      btm.append(tech, openBtn);
+      card.append(btm);
 
       incidentsListEl.append(card);
     }
   }
 
-  /**
-   * Load and render deep investigation details for selected incident
-   */
+  function renderDashboardRecent() {
+    const dashActiveInc = document.getElementById("dash-active-incidents");
+    const dashRecentAlerts = document.getElementById("dash-recent-alerts");
+
+    if (dashActiveInc) {
+      dashActiveInc.replaceChildren();
+      const openInc = allIncidents.filter(i => i.status !== "CLOSED").slice(0, 5);
+      if (openInc.length === 0) {
+        dashActiveInc.innerHTML = '<p class="muted p-empty">No active security incidents currently open.</p>';
+      } else {
+        openInc.forEach(inc => {
+          const item = node("div", "dash-item-row");
+          item.style.display = "flex";
+          item.style.alignItems = "center";
+          item.style.justifyContent = "space-between";
+          item.style.padding = "8px 10px";
+          item.style.background = "rgba(0,0,0,0.2)";
+          item.style.borderRadius = "var(--radius-sm)";
+          item.style.marginBottom = "6px";
+
+          const left = node("div", "d-flex align-center gap-8");
+          left.style.display = "flex";
+          left.style.alignItems = "center";
+          left.style.gap = "8px";
+          left.append(node("span", "incident-id-tag", `#INC-${inc.incident_id}`));
+          left.append(node("span", "mono-text text-sm", inc.source_ip));
+
+          const right = node("div", "d-flex align-center gap-8");
+          right.style.display = "flex";
+          right.style.alignItems = "center";
+          right.style.gap = "8px";
+          right.append(node("span", `badge ${getSeverityClass(inc.severity)}`, String(inc.severity || "medium").toUpperCase()));
+
+          const btn = node("button", "btn btn-outline btn-xs", "Inspect");
+          btn.type = "button";
+          btn.addEventListener("click", () => switchView("incident-detail", inc.incident_id));
+          right.append(btn);
+
+          item.append(left, right);
+          dashActiveInc.append(item);
+        });
+      }
+    }
+
+    if (dashRecentAlerts) {
+      dashRecentAlerts.replaceChildren();
+      const recent = allAlerts.slice(0, 5);
+      if (recent.length === 0) {
+        dashRecentAlerts.innerHTML = '<p class="muted p-empty">No telemetry alerts ingested yet.</p>';
+      } else {
+        recent.forEach(alt => {
+          const item = node("div", "dash-item-row");
+          item.style.display = "flex";
+          item.style.alignItems = "center";
+          item.style.justifyContent = "space-between";
+          item.style.padding = "8px 10px";
+          item.style.background = "rgba(0,0,0,0.2)";
+          item.style.borderRadius = "var(--radius-sm)";
+          item.style.marginBottom = "6px";
+
+          const left = node("div", "d-flex align-center gap-8");
+          left.style.display = "flex";
+          left.style.alignItems = "center";
+          left.style.gap = "8px";
+          left.append(node("span", `badge ${getSeverityClass(alt.severity)}`, String(alt.severity || "medium").toUpperCase()));
+          left.append(node("span", "mono-text text-sm", alt.source_ip));
+          left.append(node("span", "text-xs muted", alt.signature));
+
+          const right = node("span", "text-xs muted", getRelativeTime(alt.timestamp));
+          item.append(left, right);
+          dashRecentAlerts.append(item);
+        });
+      }
+    }
+  }
+
+  // =========================================================================
+  // DEDICATED INCIDENT INVESTIGATION WORKBENCH
+  // =========================================================================
   async function loadIncidentDetails(incidentId, scrollIntoView = false) {
-    if (!detailsContentEl || !detailsEmptyEl) return;
+    if (!incidentId) return;
 
     try {
       const data = await api(`/api/soc/incidents/${incidentId}`);
       const inc = data.incident;
       const alerts = data.alerts || [];
-      const related = data.related_alerts || [];
       const actions = data.response_actions || [];
       const timeline = data.timeline || [];
+      const notes = data.notes || [];
 
-      // Update meta header
+      // A. Populate Header
       if (detailIncidentId) detailIncidentId.textContent = `#INC-${inc.incident_id}`;
-      if (detailIncidentTitle) detailIncidentTitle.textContent = inc.title || "Untitled Incident";
+      if (detailIncidentTitle) detailIncidentTitle.textContent = inc.title || "Security Incident";
 
       if (detailSeverityBadge) {
         detailSeverityBadge.className = `badge ${getSeverityClass(inc.severity)}`;
@@ -400,7 +808,7 @@
       if (detailClassBadge) {
         if (inc.classification) {
           detailClassBadge.hidden = false;
-          detailClassBadge.className = `badge ${inc.classification === "CONFIRMED_MALICIOUS" ? "badge-amber" : "badge-neutral"}`;
+          detailClassBadge.className = `badge ${inc.classification === "CONFIRMED_MALICIOUS" ? "badge-critical" : "badge-neutral"}`;
           detailClassBadge.textContent = inc.classification.replace(/_/g, " ");
         } else {
           detailClassBadge.hidden = true;
@@ -412,6 +820,7 @@
       if (detailCreatedAt) detailCreatedAt.textContent = inc.created_at || "Not available";
       if (detailUpdatedAt) detailUpdatedAt.textContent = inc.updated_at || "Not available";
 
+      // Closure Banner
       if (detailClosureInfo) {
         if (inc.status === "CLOSED") {
           detailClosureInfo.hidden = false;
@@ -422,12 +831,7 @@
         }
       }
 
-      // Populate Summary KPI Cards
-      const summaryAlertCount = document.getElementById("summary-alert-count");
-      const summaryMitigatedCount = document.getElementById("summary-mitigated-count");
-      const summaryStatusVal = document.getElementById("summary-status-val");
-      const summaryActionCount = document.getElementById("summary-action-count");
-
+      // B. Populate Summary KPI Cards
       if (summaryAlertCount) summaryAlertCount.textContent = alerts.length;
       if (summaryMitigatedCount) {
         const verifiedMitigations = actions.filter(a => a.status === "VERIFIED").length;
@@ -436,27 +840,43 @@
       if (summaryStatusVal) summaryStatusVal.textContent = inc.status || "NEW";
       if (summaryActionCount) summaryActionCount.textContent = actions.length;
 
-      // Update workflow stepper
+      // C. Update 8-Stage Workflow Stepper
       updateWorkflowStepper(inc.status);
 
-      // Update Evidence summary
+      // Snapshot Quick Items
+      if (snapEventCount) snapEventCount.textContent = alerts.length;
+      if (snapContainmentBadge) {
+        const latestAct = actions.length > 0 ? actions[0] : null;
+        if (latestAct) {
+          snapContainmentBadge.className = `badge ${getStatusBadgeClass(latestAct.status)}`;
+          snapContainmentBadge.textContent = `${latestAct.action_type}: ${latestAct.status}`;
+        } else {
+          snapContainmentBadge.className = "badge badge-neutral";
+          snapContainmentBadge.textContent = "NONE QUEUED";
+        }
+      }
+
+      // D. Populate Overview & Evidence Pane
       if (evTechId) evTechId.textContent = inc.technique_id || "Not available";
       if (evTechName) evTechName.textContent = inc.technique_name || "Not available";
       if (evTactic) evTactic.textContent = inc.tactic || "Not available";
       if (evSignature) evSignature.textContent = inc.signature || "Not available";
       if (evMessage) {
-        const latestMsg = alerts.length > 0 ? (alerts[0].message || "No raw message text") : "Not available";
+        const latestMsg = alerts.length > 0 ? (alerts[0].message || "No telemetry message") : "Not available";
         evMessage.textContent = latestMsg;
       }
 
-      // Populate Correlated Alerts Table
+      // E. Populate Correlated Alerts Table
       if (correlatedCount) correlatedCount.textContent = alerts.length;
+      if (tabCorrelatedCount) tabCorrelatedCount.textContent = alerts.length;
+
       if (correlatedAlertsBody) {
         correlatedAlertsBody.replaceChildren();
         if (alerts.length === 0) {
           const tr = node("tr");
-          tr.append(node("td", "text-center muted", "No alerts correlated"));
-          tr.children[0].colSpan = 5;
+          const td = node("td", "text-center muted", "No alerts correlated");
+          td.colSpan = 5;
+          tr.append(td);
           correlatedAlertsBody.append(tr);
         } else {
           for (const a of alerts) {
@@ -467,20 +887,65 @@
             tdSev.append(node("span", `badge ${getSeverityClass(a.severity)}`, String(a.severity || "medium").toUpperCase()));
             tr.append(tdSev);
             tr.append(node("td", "mono-text", a.source_ip || "N/A"));
-            tr.append(node("td", "", a.message || "—"));
+            tr.append(node("td", "mono-text text-xs", a.message || "—"));
             correlatedAlertsBody.append(tr);
           }
         }
       }
 
-      // Populate Response Actions History
+      // F. Populate Chronological Timeline Feed
+      if (timelineFeed) {
+        timelineFeed.replaceChildren();
+        if (timeline.length === 0) {
+          timelineFeed.innerHTML = '<p class="muted p-empty-timeline">No timeline events recorded yet.</p>';
+        } else {
+          for (const t of timeline) {
+            const entry = node("div", `timeline-entry t-${String(t.type || "").toLowerCase()}`);
+            const meta = node("div", "t-meta");
+            meta.append(node("span", "mono-text t-time", t.timestamp));
+            meta.append(node("span", "badge badge-neutral t-type-badge", t.type));
+            const actor = (t.extra && (t.extra.author || t.extra.triggered_by)) || (t.type === "ALERT" ? "SECURITY_AGENT" : "SOC_ANALYST");
+            meta.append(node("span", "badge badge-neutral t-actor-badge", actor));
+            if (t.severity) {
+              meta.append(node("span", `badge ${getSeverityClass(t.severity)}`, t.severity.toUpperCase()));
+            }
+            entry.append(meta);
+            entry.append(node("div", "t-title", t.title));
+            entry.append(node("div", "t-detail", t.detail));
+            timelineFeed.append(entry);
+          }
+        }
+      }
+
+      // G. Populate Analyst Notes Feed
+      if (incidentNotesFeed) {
+        incidentNotesFeed.replaceChildren();
+        const analystNotesOnly = notes.filter(n => n.note_type === "ANALYST_NOTE");
+        if (notesCountBadge) notesCountBadge.textContent = `${analystNotesOnly.length} note${analystNotesOnly.length === 1 ? "" : "s"}`;
+
+        if (analystNotesOnly.length === 0) {
+          incidentNotesFeed.innerHTML = '<p class="muted p-empty-notes">No analyst investigation notes recorded yet. Use the form on the left to add findings.</p>';
+        } else {
+          analystNotesOnly.forEach(n => {
+            const noteCard = node("div", "note-entry-card");
+            const head = node("div", "note-entry-header");
+            head.append(node("span", "note-author", n.author || "SOC_ANALYST"));
+            head.append(node("span", "note-time mono-text", n.created_at || ""));
+            noteCard.append(head);
+            noteCard.append(node("div", "note-content-text", n.note_text || n.note || ""));
+            incidentNotesFeed.append(noteCard);
+          });
+        }
+      }
+
+      // H. Populate Response Actions History
       if (incidentActionsContainer) {
         incidentActionsContainer.replaceChildren();
         if (actions.length === 0) {
-          incidentActionsContainer.append(node("p", "muted p-no-actions", "No response actions recorded for this incident. Use 'Request Containment' to initiate a block."));
+          incidentActionsContainer.innerHTML = '<p class="muted p-no-actions">No response actions recorded for this incident. Use \'Request Containment\' to initiate a block.</p>';
         } else {
           for (const act of actions) {
-            const card = node("div", `action-summary-card act-${act.status.toLowerCase()}`);
+            const card = node("div", `action-summary-card act-${String(act.status).toLowerCase()}`);
             const details = node("div", "action-details-text");
             details.append(node("strong", "", `Action #${act.action_id} — ${act.action_type}`));
             details.append(node("span", "text-xs", `Target: ${act.target_ip} · Triggered by: ${act.triggered_by}`));
@@ -510,50 +975,23 @@
         }
       }
 
-      // Populate Chronological Timeline & Notes
-      if (timelineFeed) {
-        timelineFeed.replaceChildren();
-        if (timeline.length === 0) {
-          timelineFeed.append(node("p", "muted p-empty-timeline", "No timeline events recorded yet."));
-        } else {
-          for (const t of timeline) {
-            const entry = node("div", `timeline-entry t-${t.type.toLowerCase()}`);
-            const meta = node("div", "t-meta");
-            meta.append(node("span", "mono-text t-time", t.timestamp));
-            meta.append(node("span", "badge badge-neutral t-type-badge", t.type));
-            const actor = (t.extra && (t.extra.author || t.extra.triggered_by)) || (t.type === "ALERT" ? "SECURITY_AGENT" : "SOC_ANALYST");
-            meta.append(node("span", "badge badge-neutral t-actor-badge", actor));
-            if (t.severity) {
-              meta.append(node("span", `badge ${getSeverityClass(t.severity)}`, t.severity.toUpperCase()));
-            }
-            entry.append(meta);
-            entry.append(node("div", "t-title", t.title));
-            entry.append(node("div", "t-detail", t.detail));
-            timelineFeed.append(entry);
-          }
-        }
-      }
-
-      // Switch pane from empty state to content
-      detailsEmptyEl.hidden = true;
-      detailsContentEl.hidden = false;
+      // Switch pane visibility from empty state to content
+      if (detailsEmptyEl) detailsEmptyEl.hidden = true;
+      if (detailsContentEl) detailsContentEl.hidden = false;
 
       if (scrollIntoView) {
-        const panel = document.getElementById("incident-workbench-panel");
-        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        window.scrollTo({ top: 0, behavior: "smooth" });
       }
     } catch (e) {
-      console.error("Failed to load incident details:", e);
+      showToast(`Failed to load incident #${incidentId}: ${e.message}`, "error");
     }
   }
 
-  /**
-   * Update the 8-step visual workflow stepper
-   */
   function updateWorkflowStepper(currentStatus) {
     if (!workflowStepper) return;
     const currentIndex = workflowOrder.indexOf(currentStatus);
     const nodes = workflowStepper.querySelectorAll(".step-node");
+    const connectors = workflowStepper.querySelectorAll(".step-connector");
 
     nodes.forEach(nodeEl => {
       const stepName = nodeEl.getAttribute("data-step");
@@ -568,42 +1006,60 @@
         nodeEl.classList.add("future");
       }
     });
-  }
 
-  /**
-   * Jump to incident matching technique signature
-   */
-  function focusIncidentBySignature(sig) {
-    const match = allIncidents.find(i => i.signature === sig && i.status !== "CLOSED") ||
-                  allIncidents.find(i => i.signature === sig);
-    if (match) {
-      selectedIncidentId = match.incident_id;
-      renderIncidentsQueue();
-      loadIncidentDetails(match.incident_id, true);
-    } else {
-      const panel = document.getElementById("incident-workbench-panel");
-      if (panel) panel.scrollIntoView({ behavior: "smooth" });
-      alert(`No open incidents found for technique signature ${sig}.`);
-    }
+    connectors.forEach((connEl, idx) => {
+      if (idx < currentIndex) {
+        connEl.classList.add("completed");
+      } else {
+        connEl.classList.remove("completed");
+      }
+    });
   }
 
   // =========================================================================
-  // Analyst Incident Actions & State Transitions
+  // WORKFLOW TRANSITIONS & CONTAINMENT ACTIONS
   // =========================================================================
-
   async function transitionIncidentStatus(status, defaultRationale = "") {
     if (!selectedIncidentId) return;
-    const rationale = prompt(`Enter rationale for updating status to '${status}':`, defaultRationale);
-    if (rationale === null) return; // user cancelled
+    const rationale = prompt(`Enter rationale for transitioning status to '${status}':`, defaultRationale);
+    if (rationale === null) return;
 
     try {
       await api(`/api/soc/incidents/${selectedIncidentId}/status`, {
         method: "POST",
         body: JSON.stringify({ status, rationale: rationale.trim() })
       });
+      showToast(`Incident #${selectedIncidentId} transitioned to ${status}`, "success");
       fetchIncidents();
+      loadIncidentDetails(selectedIncidentId);
     } catch (e) {
-      alert(`Status update failed: ${e.message}`);
+      showToast(`Status update failed: ${e.message}`, "error");
+    }
+  }
+
+  async function requestContainmentBlock(targetIp = null) {
+    if (!selectedIncidentId) {
+      showToast("Select an incident to request containment", "error");
+      return;
+    }
+    const ip = targetIp || (detailSourceIp ? detailSourceIp.textContent : "").trim();
+    if (!ip || ip === "Not available") {
+      showToast("Target IP not available for containment", "error");
+      return;
+    }
+
+    if (!confirm(`Queue SOAR Containment BLOCK_IP action for target ${ip}?\nAction will enter PENDING status awaiting explicit analyst approval.`)) return;
+
+    try {
+      const r = await api("/api/soc/mitigate/block", {
+        method: "POST",
+        body: JSON.stringify({ target_ip: ip, incident_id: selectedIncidentId, timeout_seconds: 1800 })
+      });
+      showToast(`Containment Action #${r.action_id} queued (PENDING approval)`, "success");
+      fetchIncidents();
+      loadIncidentDetails(selectedIncidentId);
+    } catch (e) {
+      showToast(`Containment request failed: ${e.message}`, "error");
     }
   }
 
@@ -611,161 +1067,415 @@
     if (!confirm(`Approve Containment Action #${actionId} for execution?`)) return;
     try {
       const r = await api(`/api/soc/response-actions/${actionId}/approve`, { method: "POST" });
-      alert(`Action #${r.action_id} approved. Remediation poller will now pick up this action.`);
+      showToast(`Action #${r.action_id} approved for execution`, "success");
       refresh();
       if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
     } catch (e) {
-      alert(`Approval failed: ${e.message}`);
+      showToast(`Approval failed: ${e.message}`, "error");
     }
   }
 
   async function verifyResponseAction(actionId) {
-    if (!confirm(`Verify that Containment Action #${actionId} exists on host nftables?\nThis will mark the technique MITIGATED in the matrix and update incident to CONTAINED.`)) return;
+    if (!confirm(`Verify that Containment Action #${actionId} exists on host nftables?\nThis will mark the technique MITIGATED in the matrix and transition incident to CONTAINED.`)) return;
     try {
       const r = await api(`/api/soc/response-actions/${actionId}/verify`, { method: "POST" });
-      alert(`Action #${r.action_id} verified. Technique is now marked MITIGATED in the MITRE ATT&CK Matrix.`);
+      showToast(`Action #${r.action_id} verified against host nftables. Technique reflects MITIGATED.`, "success");
       refresh();
       if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
     } catch (e) {
-      alert(`Verification failed: ${e.message}`);
+      showToast(`Verification failed: ${e.message}`, "error");
     }
   }
 
-  // Wire Incident Buttons
-  if (btnWfTriage) {
-    btnWfTriage.addEventListener("click", () => transitionIncidentStatus("TRIAGE", "Triage initiated"));
-  }
+  // =========================================================================
+  // MITRE ATT&CK MATRIX
+  // =========================================================================
+  function renderMitreMatrix(data) {
+    const matrix = data.matrix || [];
+    const targetGrids = [grid, gridFull].filter(Boolean);
 
-  if (btnWfInvestigating) {
-    btnWfInvestigating.addEventListener("click", () => transitionIncidentStatus("INVESTIGATING", "Investigating correlated alerts"));
-  }
+    targetGrids.forEach(g => {
+      g.replaceChildren();
+      for (const item of matrix) {
+        const card = node("div", `mitre-card ${item.state === "MITIGATED" ? "state-green" : (item.state === "DETECTED" ? "state-amber" : "state-gray")}`);
 
-  if (btnWfToggleClassify && classificationDrawer) {
-    btnWfToggleClassify.addEventListener("click", () => {
-      classificationDrawer.hidden = !classificationDrawer.hidden;
-      if (!classificationDrawer.hidden && classificationRationaleInput) {
-        classificationRationaleInput.focus();
+        const top = node("div", "mitre-card-top");
+        top.append(node("span", "mitre-id mono-text", item.technique_id));
+        top.append(node("span", `badge ${item.state === "MITIGATED" ? "badge-verified" : (item.state === "DETECTED" ? "badge-amber" : "badge-neutral")}`, item.state));
+        card.append(top);
+
+        card.append(node("h3", "mitre-name", item.technique_name));
+        card.append(node("p", "text-xs muted", `${item.tactic} · ${item.signature}`));
+        card.append(node("p", "text-sm", `Observed: ${item.alert_count} alerts · Mitigated: ${item.mitigated_count}`));
+
+        const actions = node("div", "mitre-actions");
+        if (item.alert_count > 0) {
+          const invBtn = node("button", "btn btn-investigate btn-xs", `Investigate (${item.alert_count})`);
+          invBtn.type = "button";
+          invBtn.addEventListener("click", () => {
+            const match = allIncidents.find(i => i.signature === item.signature && i.status !== "CLOSED") ||
+                          allIncidents.find(i => i.signature === item.signature);
+            if (match) {
+              switchView("incident-detail", match.incident_id);
+            } else {
+              switchView("alerts");
+            }
+          });
+          actions.append(invBtn);
+        }
+        card.append(actions);
+        g.append(card);
       }
+    });
+
+    const formattedIndex = data.resilience_index == null ? "N/A" : `${Number(data.resilience_index).toFixed(2)}%`;
+    if (value) value.textContent = formattedIndex;
+    if (detail) detail.textContent = `${data.mitigated_techniques} mitigated / ${data.detected_techniques} detected techniques`;
+    if (statResilience) statResilience.textContent = formattedIndex;
+    if (statDetected) statDetected.textContent = data.detected_techniques ?? 0;
+    if (statMitigated) statMitigated.textContent = data.mitigated_techniques ?? 0;
+    if (statTotal) statTotal.textContent = matrix.length;
+  }
+
+  // =========================================================================
+  // DEDICATED REPORTS WORKFLOW (Form, Live Preview, Validation, Real Submission)
+  // =========================================================================
+  async function fetchReports() {
+    if (!reportsHistoryBody) return;
+    try {
+      const data = await api("/api/soc/reports");
+      allReports = data.reports || [];
+      renderReportsHistory();
+    } catch {
+      allReports = [];
+      renderReportsHistory();
+    }
+  }
+
+  function renderReportsHistory() {
+    if (!reportsHistoryBody) return;
+    reportsHistoryBody.replaceChildren();
+
+    if (allReports.length === 0) {
+      reportsHistoryBody.innerHTML = '<tr><td colspan="7" class="text-center muted">No reports generated yet. Use the form above to draft and submit a report.</td></tr>';
+      return;
+    }
+
+    allReports.forEach(rep => {
+      const tr = node("tr");
+      tr.append(node("td", "mono-text", `#REP-${rep.report_id}`));
+      tr.append(node("td", "mono-text text-xs", rep.created_at || ""));
+      tr.append(node("td", "", rep.title || "Untitled Report"));
+      tr.append(node("td", "", rep.report_type || "General"));
+      tr.append(node("td", "mono-text", rep.incident_id ? `#INC-${rep.incident_id}` : "Unlinked"));
+      tr.append(node("td", "", rep.author || "SOC_ANALYST"));
+
+      const tdAct = node("td");
+      const viewBtn = node("button", "btn btn-outline btn-xs", "Load Preview");
+      viewBtn.type = "button";
+      viewBtn.addEventListener("click", () => {
+        if (reportTitleInput) reportTitleInput.value = rep.title;
+        if (reportTypeSelect) reportTypeSelect.value = rep.report_type;
+        if (reportSummaryInput) reportSummaryInput.value = rep.summary;
+        if (reportFindingsInput) reportFindingsInput.value = rep.findings || "";
+        if (reportIncidentSelect) reportIncidentSelect.value = rep.incident_id || "";
+        updateReportPreview();
+        showToast(`Loaded Report #${rep.report_id} into preview`, "info");
+      });
+      tdAct.append(viewBtn);
+      tr.append(tdAct);
+
+      reportsHistoryBody.append(tr);
     });
   }
 
-  if (btnCancelClassification && classificationDrawer) {
-    btnCancelClassification.addEventListener("click", () => {
-      classificationDrawer.hidden = true;
+  function populateReportIncidentSelect() {
+    if (!reportIncidentSelect) return;
+    const currentVal = reportIncidentSelect.value;
+    reportIncidentSelect.replaceChildren();
+
+    const defOpt = node("option", "", "General SOC Report (Unlinked)");
+    defOpt.value = "";
+    reportIncidentSelect.append(defOpt);
+
+    allIncidents.forEach(inc => {
+      const opt = node("option", "", `#INC-${inc.incident_id}: ${inc.title || inc.signature}`);
+      opt.value = inc.incident_id;
+      reportIncidentSelect.append(opt);
     });
+
+    if (currentVal) reportIncidentSelect.value = currentVal;
   }
 
-  if (btnSubmitClassification) {
-    btnSubmitClassification.addEventListener("click", async () => {
-      if (!selectedIncidentId) return;
-      const selectedRadio = document.querySelector('input[name="incident-class-choice"]:checked');
-      const classification = selectedRadio ? selectedRadio.value : "CONFIRMED_MALICIOUS";
-      const rationale = (classificationRationaleInput ? classificationRationaleInput.value : "").trim();
+  function updateReportPreview() {
+    if (!prevTitle) return;
 
-      if (!rationale) {
-        alert("Please provide an investigation rationale for this classification.");
-        if (classificationRationaleInput) classificationRationaleInput.focus();
-        return;
+    const title = (reportTitleInput ? reportTitleInput.value : "").trim() || "Incident Investigation Dossier";
+    const category = (reportTypeSelect ? reportTypeSelect.value : "") || "Incident Investigation Dossier";
+    const summary = (reportSummaryInput ? reportSummaryInput.value : "").trim() || "Enter executive summary on the left to preview findings.";
+    const findings = (reportFindingsInput ? reportFindingsInput.value : "").trim() || "Technical evidence and telemetry details will appear here.";
+    const incId = reportIncidentSelect ? reportIncidentSelect.value : "";
+
+    prevTitle.textContent = title;
+    if (prevCategory) prevCategory.textContent = category;
+    if (prevSummary) prevSummary.textContent = summary;
+    if (prevFindings) prevFindings.textContent = findings;
+    if (prevDate) prevDate.textContent = new Date().toISOString().substring(0, 19).replace("T", " ") + " UTC";
+
+    if (incId) {
+      const linked = allIncidents.find(i => String(i.incident_id) === String(incId));
+      if (prevIncidentTag) prevIncidentTag.textContent = `#INC-${incId}`;
+      if (prevClassification) prevClassification.textContent = (linked && linked.classification) ? linked.classification.replace(/_/g, " ") : "UNCLASSIFIED";
+      if (prevSourceIp) prevSourceIp.textContent = linked ? linked.source_ip : "—";
+      if (prevMitre) prevMitre.textContent = linked ? `${linked.technique_name || "Unknown"} (${linked.technique_id || "N/A"})` : "—";
+      if (prevAlertCount) prevAlertCount.textContent = linked ? (linked.alert_count || 1) : 0;
+      if (prevMitigationStatus) prevMitigationStatus.textContent = linked ? (linked.status === "CONTAINED" ? "VERIFIED HOST MITIGATION" : "DRY-RUN / UNVERIFIED") : "DRY-RUN";
+    } else {
+      if (prevIncidentTag) prevIncidentTag.textContent = "General Assessment";
+      if (prevClassification) prevClassification.textContent = "N/A";
+      if (prevSourceIp) prevSourceIp.textContent = "Enterprise Perimeter";
+      if (prevMitre) prevMitre.textContent = "Multi-Technique Assessment";
+      if (prevAlertCount) prevAlertCount.textContent = allAlerts.length;
+      if (prevMitigationStatus) prevMitigationStatus.textContent = "DRY-RUN ACTIVE";
+    }
+  }
+
+  async function submitReport() {
+    const title = (reportTitleInput ? reportTitleInput.value : "").trim();
+    const reportType = (reportTypeSelect ? reportTypeSelect.value : "").trim();
+    const summary = (reportSummaryInput ? reportSummaryInput.value : "").trim();
+    const findings = (reportFindingsInput ? reportFindingsInput.value : "").trim();
+    const dateRange = (reportDateRangeSelect ? reportDateRangeSelect.value : "").trim();
+    const incidentId = (reportIncidentSelect ? reportIncidentSelect.value : "") || null;
+
+    if (!title) {
+      showToast("Report title is required", "error");
+      if (reportTitleInput) reportTitleInput.focus();
+      return;
+    }
+    if (!summary) {
+      showToast("Executive summary is required", "error");
+      if (reportSummaryInput) reportSummaryInput.focus();
+      return;
+    }
+
+    if (btnSubmitReport) {
+      btnSubmitReport.disabled = true;
+      btnSubmitReport.textContent = "Generating...";
+    }
+
+    try {
+      const res = await api("/api/soc/reports", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          report_type: reportType,
+          summary,
+          findings,
+          date_range: dateRange,
+          incident_id: incidentId
+        })
+      });
+
+      showToast(`Report #${res.report_id} generated and saved successfully!`, "success");
+      fetchReports();
+    } catch (e) {
+      showToast(`Report generation failed: ${e.message}`, "error");
+    } finally {
+      if (btnSubmitReport) {
+        btnSubmitReport.disabled = false;
+        btnSubmitReport.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:5px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Submit &amp; Save Report
+        `;
       }
+    }
+  }
 
-      try {
-        await api(`/api/soc/incidents/${selectedIncidentId}/classify`, {
-          method: "POST",
-          body: JSON.stringify({ classification, rationale })
+  // =========================================================================
+  // TRENDS VIEW COMPUTATION
+  // =========================================================================
+  function renderTrends() {
+    const sigBars = document.getElementById("trends-signature-bars");
+    const sevBars = document.getElementById("trends-severity-bars");
+    const srcTbody = document.getElementById("trends-source-tbody");
+
+    // 1. Signature Distribution
+    if (sigBars) {
+      sigBars.replaceChildren();
+      const counts = {};
+      allAlerts.forEach(a => {
+        const sig = a.signature || "UNKNOWN";
+        counts[sig] = (counts[sig] || 0) + 1;
+      });
+
+      const maxCount = Math.max(...Object.values(counts), 1);
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+
+      if (sorted.length === 0) {
+        sigBars.innerHTML = '<p class="muted">No telemetry observed yet.</p>';
+      } else {
+        sorted.forEach(([sig, cnt]) => {
+          const pct = Math.round((cnt / maxCount) * 100);
+          const row = node("div", "trend-bar-row");
+          const meta = node("div", "trend-bar-meta");
+          meta.append(node("strong", "", sig));
+          meta.append(node("span", "mono-text", `${cnt} alert${cnt === 1 ? "" : "s"}`));
+          row.append(meta);
+
+          const track = node("div", "trend-bar-track");
+          const fill = node("div", "trend-bar-fill");
+          fill.style.width = `${pct}%`;
+          fill.style.background = "linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%)";
+          track.append(fill);
+          row.append(track);
+
+          sigBars.append(row);
         });
-        if (classificationDrawer) classificationDrawer.hidden = true;
-        if (classificationRationaleInput) classificationRationaleInput.value = "";
-        fetchIncidents();
-      } catch (e) {
-        alert(`Classification failed: ${e.message}`);
       }
-    });
-  }
+    }
 
-  if (btnWfRequestBlock) {
-    btnWfRequestBlock.addEventListener("click", () => {
-      if (!selectedIncidentId) return;
-      const ip = (detailSourceIp ? detailSourceIp.textContent : "").trim();
-      requestAction(null, "block", ip !== "Not available" ? ip : null, selectedIncidentId);
-    });
-  }
+    // 2. Severity Profile
+    if (sevBars) {
+      sevBars.replaceChildren();
+      const sevCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+      allAlerts.forEach(a => {
+        const sev = String(a.severity || "medium").toLowerCase();
+        if (sevCounts[sev] !== undefined) sevCounts[sev]++;
+      });
 
-  if (btnWfClose) {
-    btnWfClose.addEventListener("click", () => {
-      if (!selectedIncidentId) return;
-      const rationale = prompt("Enter required resolution and closure rationale to close this incident:");
-      if (rationale === null) return;
-      if (!rationale.trim()) {
-        alert("A closure rationale is required to close an incident.");
-        return;
-      }
-      transitionIncidentStatus("CLOSED", rationale.trim());
-    });
-  }
+      const maxSev = Math.max(...Object.values(sevCounts), 1);
+      const sevColors = {
+        critical: "#ef4444",
+        high: "#f97316",
+        medium: "#f59e0b",
+        low: "#3b82f6",
+        info: "#06b6d4"
+      };
 
-  if (btnAddNote) {
-    btnAddNote.addEventListener("click", async () => {
-      if (!selectedIncidentId || !analystNoteTextarea) return;
-      const noteText = analystNoteTextarea.value.trim();
-      if (!noteText) {
-        alert("Please enter note content before submitting.");
-        analystNoteTextarea.focus();
-        return;
-      }
+      Object.entries(sevCounts).forEach(([sev, cnt]) => {
+        const pct = Math.round((cnt / maxSev) * 100);
+        const row = node("div", "trend-bar-row");
+        const meta = node("div", "trend-bar-meta");
+        meta.append(node("strong", "", sev.toUpperCase()));
+        meta.append(node("span", "mono-text", `${cnt} (${Math.round((cnt / (allAlerts.length || 1)) * 100)}%)`));
+        row.append(meta);
 
-      try {
-        await api(`/api/soc/incidents/${selectedIncidentId}/notes`, {
-          method: "POST",
-          body: JSON.stringify({ note_text: noteText })
+        const track = node("div", "trend-bar-track");
+        const fill = node("div", "trend-bar-fill");
+        fill.style.width = `${pct}%`;
+        fill.style.background = sevColors[sev] || "#6366f1";
+        track.append(fill);
+        row.append(track);
+
+        sevBars.append(row);
+      });
+    }
+
+    // 3. Top Sources Table
+    if (srcTbody) {
+      srcTbody.replaceChildren();
+      const ipMap = {};
+      allAlerts.forEach(a => {
+        const ip = a.source_ip || "Unknown";
+        if (!ipMap[ip]) ipMap[ip] = { count: 0, sigs: new Set(), incId: a.incident_id };
+        ipMap[ip].count++;
+        ipMap[ip].sigs.add(a.signature);
+      });
+
+      const sortedIps = Object.entries(ipMap).sort((a, b) => b[1].count - a[1].count);
+      if (sortedIps.length === 0) {
+        srcTbody.innerHTML = '<tr><td colspan="5" class="text-center muted">No source IP activity recorded</td></tr>';
+      } else {
+        sortedIps.forEach(([ip, data]) => {
+          const tr = node("tr");
+          tr.append(node("td", "mono-text font-bold", ip));
+          tr.append(node("td", "mono-text", data.count));
+          tr.append(node("td", "", Array.from(data.sigs).join(", ")));
+          tr.append(node("td", "", data.incId ? `Linked #INC-${data.incId}` : "Uncorrelated"));
+
+          const tdAct = node("td");
+          const invBtn = node("button", "btn btn-outline btn-xs", "Investigate");
+          invBtn.type = "button";
+          invBtn.addEventListener("click", () => {
+            if (data.incId) {
+              switchView("incident-detail", data.incId);
+            } else {
+              switchView("alerts");
+            }
+          });
+          tdAct.append(invBtn);
+          tr.append(tdAct);
+
+          srcTbody.append(tr);
         });
-        analystNoteTextarea.value = "";
-        loadIncidentDetails(selectedIncidentId, false);
-      } catch (e) {
-        alert(`Failed to add note: ${e.message}`);
+      }
+    }
+  }
+
+  // =========================================================================
+  // RESPONSE ACTIONS VIEW
+  // =========================================================================
+  function renderAllActionsTable() {
+    const allActionsBody = document.getElementById("all-actions-body");
+    if (!allActionsBody) return;
+    allActionsBody.replaceChildren();
+
+    // Flatten all actions from all incidents
+    allResponseActions = [];
+    allIncidents.forEach(inc => {
+      if (inc.response_actions) {
+        allResponseActions.push(...inc.response_actions);
       }
     });
-  }
 
-  if (btnRefreshIncidents) {
-    btnRefreshIncidents.addEventListener("click", () => {
-      fetchIncidents();
+    if (sidebarActionBadge) {
+      sidebarActionBadge.textContent = allResponseActions.length;
+    }
+
+    if (allResponseActions.length === 0) {
+      allActionsBody.innerHTML = '<tr><td colspan="9" class="text-center muted">No response actions queued or executed.</td></tr>';
+      return;
+    }
+
+    allResponseActions.forEach(act => {
+      const tr = node("tr");
+      tr.append(node("td", "mono-text", `#ACT-${act.action_id}`));
+      tr.append(node("td", "mono-text", act.incident_id ? `#INC-${act.incident_id}` : "Global"));
+      tr.append(node("td", "mono-text", act.target_ip));
+      tr.append(node("td", "mono-text", act.action_type));
+
+      const tdStatus = node("td");
+      tdStatus.append(node("span", `badge ${getStatusBadgeClass(act.status)}`, act.status));
+      tr.append(tdStatus);
+
+      tr.append(node("td", "", act.triggered_by));
+      tr.append(node("td", "mono-text text-xs", act.created_at || ""));
+      tr.append(node("td", "mono-text text-xs", act.executed_at || "—"));
+
+      const tdAct = node("td");
+      if (act.status === "PENDING") {
+        const appBtn = node("button", "btn btn-primary btn-xs", "Approve");
+        appBtn.type = "button";
+        appBtn.addEventListener("click", () => approveResponseAction(act.action_id));
+        tdAct.append(appBtn);
+      } else if (act.status === "EXECUTED" || act.status === "DRY_RUN") {
+        const verBtn = node("button", "btn btn-outline btn-xs", "Verify nftables");
+        verBtn.type = "button";
+        verBtn.addEventListener("click", () => verifyResponseAction(act.action_id));
+        tdAct.append(verBtn);
+      } else {
+        tdAct.append(node("span", "text-xs muted", "Complete"));
+      }
+      tr.append(tdAct);
+
+      allActionsBody.append(tr);
     });
   }
 
-  // Filter Buttons
-  if (filterAllBtn) {
-    filterAllBtn.addEventListener("click", () => {
-      currentFilter = "ALL";
-      filterAllBtn.classList.add("active");
-      if (filterOpenBtn) filterOpenBtn.classList.remove("active");
-      if (filterClosedBtn) filterClosedBtn.classList.remove("active");
-      renderIncidentsQueue();
-    });
-  }
-
-  if (filterOpenBtn) {
-    filterOpenBtn.addEventListener("click", () => {
-      currentFilter = "OPEN";
-      filterOpenBtn.classList.add("active");
-      if (filterAllBtn) filterAllBtn.classList.remove("active");
-      if (filterClosedBtn) filterClosedBtn.classList.remove("active");
-      renderIncidentsQueue();
-    });
-  }
-
-  if (filterClosedBtn) {
-    filterClosedBtn.addEventListener("click", () => {
-      currentFilter = "CLOSED";
-      filterClosedBtn.classList.add("active");
-      if (filterAllBtn) filterAllBtn.classList.remove("active");
-      if (filterOpenBtn) filterOpenBtn.classList.remove("active");
-      renderIncidentsQueue();
-    });
-  }
-
-  /**
-   * Fetch matrix and handle states
-   */
+  // =========================================================================
+  // GLOBAL REFRESH
+  // =========================================================================
   async function refresh() {
     try {
       if (error) {
@@ -774,12 +1484,13 @@
       }
 
       const data = await api("/api/soc/mitre-matrix");
-      render(data);
+      renderMitreMatrix(data);
 
       if (window.SOC_ANALYST_TOKEN) {
         updateAuthBadge("authenticated");
-        // Also fetch incidents queue when authenticated
-        fetchIncidents();
+        await fetchIncidents();
+        await fetchAlerts();
+        await fetchReports();
       } else {
         updateAuthBadge("unauthenticated");
       }
@@ -789,7 +1500,7 @@
         error.hidden = false;
       }
 
-      if (e.message.includes("401")) {
+      if (e.message && e.message.includes("401")) {
         updateAuthBadge(window.SOC_ANALYST_TOKEN ? "error" : "unauthenticated", e.message);
       } else {
         updateAuthBadge("error", e.message);
@@ -798,28 +1509,30 @@
   }
 
   // =========================================================================
-  // Analyst Token Management (Volatile In-Memory only; no storage persistence)
+  // TOKEN MANAGEMENT
   // =========================================================================
-
-  function applyTokenFromInput() {
-    if (!tokenInput) return;
-    const token = tokenInput.value.trim();
-    if (!token) {
-      alert("Please enter your ANALYST_TOKEN before setting.");
-      tokenInput.focus();
+  function setToken(token) {
+    const cleanToken = (token || "").trim();
+    if (!cleanToken) {
+      showToast("Please enter an ANALYST_TOKEN before setting.", "error");
       return;
     }
 
-    window.SOC_ANALYST_TOKEN = token;
+    window.SOC_ANALYST_TOKEN = cleanToken;
+    if (tokenInput) tokenInput.value = cleanToken;
+    if (modalTokenInput) modalTokenInput.value = cleanToken;
     updateAuthBadge("checking");
     refresh();
+    showToast("Analyst token configured in memory", "success");
   }
 
   function clearToken() {
     window.SOC_ANALYST_TOKEN = "";
     if (tokenInput) tokenInput.value = "";
+    if (modalTokenInput) modalTokenInput.value = "";
     updateAuthBadge("unauthenticated");
     refresh();
+    showToast("Analyst session cleared", "info");
   }
 
   function toggleTokenVisibility() {
@@ -833,19 +1546,366 @@
     }
   }
 
-  // Setup DOM Event Listeners
-  if (btnSetToken) btnSetToken.addEventListener("click", applyTokenFromInput);
-  if (btnClearToken) btnClearToken.addEventListener("click", clearToken);
-  if (btnToggleToken) btnToggleToken.addEventListener("click", toggleTokenVisibility);
-  if (btnRefresh) btnRefresh.addEventListener("click", refresh);
-
-  if (tokenInput) {
-    tokenInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+  // =========================================================================
+  // EVENT LISTENERS INITIALIZATION
+  // =========================================================================
+  function setupEventListeners() {
+    // Navigation Links
+    document.querySelectorAll(".nav-link").forEach(link => {
+      link.addEventListener("click", (e) => {
         e.preventDefault();
-        applyTokenFromInput();
+        const targetView = link.getAttribute("id").replace("nav-", "");
+        switchView(targetView);
+      });
+    });
+
+    // Mobile Sidebar Toggle
+    if (sidebarToggleBtn && sidebarEl) {
+      sidebarToggleBtn.addEventListener("click", () => {
+        sidebarEl.classList.toggle("open");
+      });
+    }
+
+    // Refresh Buttons
+    if (btnRefresh) btnRefresh.addEventListener("click", refresh);
+    if (btnRefreshAlerts) btnRefreshAlerts.addEventListener("click", fetchAlerts);
+    if (btnRefreshIncidentDetail) btnRefreshIncidentDetail.addEventListener("click", () => {
+      if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
+    });
+    if (btnRefreshReportsList) btnRefreshReportsList.addEventListener("click", fetchReports);
+
+    // Back to Alerts / Investigations Buttons
+    if (btnBackToAlerts) {
+      btnBackToAlerts.addEventListener("click", () => switchView("alerts"));
+    }
+    if (btnBackToInvestigations) {
+      btnBackToInvestigations.addEventListener("click", () => switchView("investigations"));
+    }
+    if (btnEmptyGotoAlerts) {
+      btnEmptyGotoAlerts.addEventListener("click", () => switchView("alerts"));
+    }
+    if (btnEmptyGotoIncidents) {
+      btnEmptyGotoIncidents.addEventListener("click", () => switchView("investigations"));
+    }
+
+    // Alerts Filters
+    document.querySelectorAll(".filter-pill-group .filter-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        document.querySelectorAll(".filter-pill-group .filter-pill").forEach(p => p.classList.remove("active"));
+        pill.classList.add("active");
+        alertSeverityFilter = pill.getAttribute("data-sev");
+        renderAlertsGrid();
+      });
+    });
+
+    if (alertsSigFilter) {
+      alertsSigFilter.addEventListener("change", () => {
+        alertSignatureFilter = alertsSigFilter.value;
+        renderAlertsGrid();
+      });
+    }
+
+    if (alertsSearchInput) {
+      alertsSearchInput.addEventListener("input", () => {
+        alertSearchQuery = alertsSearchInput.value.trim();
+        renderAlertsGrid();
+      });
+    }
+
+    if (btnToggleFocus && focusBtnLabel) {
+      btnToggleFocus.addEventListener("click", () => {
+        focusMode = !focusMode;
+        focusBtnLabel.textContent = focusMode ? "Standard View" : "Focus Mode";
+        btnToggleFocus.classList.toggle("btn-primary", focusMode);
+        renderAlertsGrid();
+      });
+    }
+
+    // Incident Filter Buttons
+    if (filterAllBtn) {
+      filterAllBtn.addEventListener("click", () => {
+        incidentStatusFilter = "ALL";
+        filterAllBtn.classList.add("active");
+        if (filterOpenBtn) filterOpenBtn.classList.remove("active");
+        if (filterClosedBtn) filterClosedBtn.classList.remove("active");
+        renderIncidentsQueue();
+      });
+    }
+    if (filterOpenBtn) {
+      filterOpenBtn.addEventListener("click", () => {
+        incidentStatusFilter = "OPEN";
+        filterOpenBtn.classList.add("active");
+        if (filterAllBtn) filterAllBtn.classList.remove("active");
+        if (filterClosedBtn) filterClosedBtn.classList.remove("active");
+        renderIncidentsQueue();
+      });
+    }
+    if (filterClosedBtn) {
+      filterClosedBtn.addEventListener("click", () => {
+        incidentStatusFilter = "CLOSED";
+        filterClosedBtn.classList.add("active");
+        if (filterAllBtn) filterAllBtn.classList.remove("active");
+        if (filterOpenBtn) filterOpenBtn.classList.remove("active");
+        renderIncidentsQueue();
+      });
+    }
+
+    // Incident Tabs Switching
+    document.querySelectorAll(".inc-tab-btn").forEach(tab => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".inc-tab-btn").forEach(t => {
+          t.classList.remove("active");
+          t.setAttribute("aria-selected", "false");
+        });
+        tab.classList.add("active");
+        tab.setAttribute("aria-selected", "true");
+
+        const targetPaneId = tab.getAttribute("data-target");
+        document.querySelectorAll(".incident-pane").forEach(p => {
+          p.hidden = true;
+          p.classList.remove("active");
+        });
+
+        const targetPane = document.getElementById(targetPaneId);
+        if (targetPane) {
+          targetPane.hidden = false;
+          targetPane.classList.add("active");
+        }
+      });
+    });
+
+    // Workflow Action Buttons
+    if (btnWfTriage) {
+      btnWfTriage.addEventListener("click", () => transitionIncidentStatus("TRIAGE", "Triage initiated"));
+    }
+    if (btnWfInvestigating) {
+      btnWfInvestigating.addEventListener("click", () => transitionIncidentStatus("INVESTIGATING", "Deep investigation underway"));
+    }
+    if (btnWfToggleClassify && classificationDrawer) {
+      btnWfToggleClassify.addEventListener("click", () => {
+        classificationDrawer.hidden = !classificationDrawer.hidden;
+        if (!classificationDrawer.hidden && classificationRationaleInput) {
+          classificationRationaleInput.focus();
+        }
+      });
+    }
+    if (btnCancelClassification && classificationDrawer) {
+      btnCancelClassification.addEventListener("click", () => {
+        classificationDrawer.hidden = true;
+      });
+    }
+    if (btnSubmitClassification) {
+      btnSubmitClassification.addEventListener("click", async () => {
+        if (!selectedIncidentId) return;
+        const selectedRadio = document.querySelector('input[name="incident-class-choice"]:checked');
+        const classification = selectedRadio ? selectedRadio.value : "CONFIRMED_MALICIOUS";
+        const rationale = (classificationRationaleInput ? classificationRationaleInput.value : "").trim();
+
+        if (!rationale) {
+          showToast("Classification rationale is mandatory", "error");
+          if (classificationRationaleInput) classificationRationaleInput.focus();
+          return;
+        }
+
+        try {
+          await api(`/api/soc/incidents/${selectedIncidentId}/classify`, {
+            method: "POST",
+            body: JSON.stringify({ classification, rationale })
+          });
+          if (classificationDrawer) classificationDrawer.hidden = true;
+          if (classificationRationaleInput) classificationRationaleInput.value = "";
+          showToast(`Incident #${selectedIncidentId} classified as ${classification}`, "success");
+          fetchIncidents();
+          loadIncidentDetails(selectedIncidentId);
+        } catch (e) {
+          showToast(`Classification failed: ${e.message}`, "error");
+        }
+      });
+    }
+    if (btnWfRequestBlock) {
+      btnWfRequestBlock.addEventListener("click", () => requestContainmentBlock());
+    }
+    if (btnSnapQuickContain) {
+      btnSnapQuickContain.addEventListener("click", () => requestContainmentBlock());
+    }
+    if (btnSnapCreateReport) {
+      btnSnapCreateReport.addEventListener("click", () => {
+        switchView("reports");
+        if (reportIncidentSelect && selectedIncidentId) {
+          reportIncidentSelect.value = selectedIncidentId;
+          updateReportPreview();
+        }
+      });
+    }
+    if (btnWfClose) {
+      btnWfClose.addEventListener("click", () => {
+        if (!selectedIncidentId) return;
+        const rationale = prompt("Enter resolution rationale to close this incident:");
+        if (rationale === null) return;
+        if (!rationale.trim()) {
+          showToast("A closure rationale is required to close an incident", "error");
+          return;
+        }
+        transitionIncidentStatus("CLOSED", rationale.trim());
+      });
+    }
+
+    // Copy Telemetry Button
+    if (btnCopyTelemetry && evMessage) {
+      btnCopyTelemetry.addEventListener("click", () => {
+        navigator.clipboard.writeText(evMessage.textContent).then(() => {
+          showToast("Copied raw message to clipboard", "info");
+        });
+      });
+    }
+
+    // Add Note Button
+    if (btnAddNote && analystNoteTextarea) {
+      btnAddNote.addEventListener("click", async () => {
+        if (!selectedIncidentId) return;
+        const noteText = analystNoteTextarea.value.trim();
+        if (!noteText) {
+          showToast("Note content cannot be empty", "error");
+          analystNoteTextarea.focus();
+          return;
+        }
+
+        btnAddNote.disabled = true;
+        if (noteStatusMsg) noteStatusMsg.textContent = "Posting note...";
+
+        try {
+          await api(`/api/soc/incidents/${selectedIncidentId}/notes`, {
+            method: "POST",
+            body: JSON.stringify({ note_text: noteText })
+          });
+          analystNoteTextarea.value = "";
+          showToast("Investigation note recorded", "success");
+          if (noteStatusMsg) noteStatusMsg.textContent = "Note saved to audit trail.";
+          loadIncidentDetails(selectedIncidentId, false);
+        } catch (e) {
+          showToast(`Failed to add note: ${e.message}`, "error");
+          if (noteStatusMsg) noteStatusMsg.textContent = `Error: ${e.message}`;
+        } finally {
+          btnAddNote.disabled = false;
+        }
+      });
+    }
+
+    // Reports Form Inputs & Preview
+    if (reportTitleInput) reportTitleInput.addEventListener("input", updateReportPreview);
+    if (reportTypeSelect) reportTypeSelect.addEventListener("change", updateReportPreview);
+    if (reportSummaryInput) reportSummaryInput.addEventListener("input", updateReportPreview);
+    if (reportFindingsInput) reportFindingsInput.addEventListener("input", updateReportPreview);
+    if (reportIncidentSelect) {
+      reportIncidentSelect.addEventListener("change", () => {
+        const incId = reportIncidentSelect.value;
+        if (incId) {
+          const inc = allIncidents.find(i => String(i.incident_id) === String(incId));
+          if (inc) {
+            if (reportTitleInput && (!reportTitleInput.value || reportTitleInput.value.startsWith("Incident #"))) {
+              reportTitleInput.value = `Incident #${inc.incident_id}: ${inc.title || inc.signature} Dossier`;
+            }
+            if (reportSummaryInput && !reportSummaryInput.value) {
+              reportSummaryInput.value = `Investigation of ${inc.technique_name || inc.signature} activity observed from host ${inc.source_ip}. Incident is in ${inc.status} state with ${inc.alert_count} correlated alerts.`;
+            }
+          }
+        }
+        updateReportPreview();
+      });
+    }
+
+    if (btnPreviewReport) {
+      btnPreviewReport.addEventListener("click", updateReportPreview);
+    }
+    if (btnSubmitReport) {
+      btnSubmitReport.addEventListener("click", submitReport);
+    }
+    if (btnPrintReport) {
+      btnPrintReport.addEventListener("click", () => {
+        updateReportPreview();
+        window.print();
+      });
+    }
+
+    // Settings Token Form
+    if (btnSetToken) {
+      btnSetToken.addEventListener("click", () => {
+        if (tokenInput) setToken(tokenInput.value);
+      });
+    }
+    if (btnClearToken) btnClearToken.addEventListener("click", clearToken);
+    if (btnToggleToken) btnToggleToken.addEventListener("click", toggleTokenVisibility);
+    if (btnTestAuth) {
+      btnTestAuth.addEventListener("click", async () => {
+        try {
+          await api("/api/soc/mitre-matrix");
+          showToast("Analyst token successfully verified by backend!", "success");
+        } catch (e) {
+          showToast(`Token verification failed: ${e.message}`, "error");
+        }
+      });
+    }
+
+    if (tokenInput) {
+      tokenInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          setToken(tokenInput.value);
+        }
+      });
+    }
+
+    // Quick Token Modal
+    if (btnQuickToken && modalQuickToken) {
+      btnQuickToken.addEventListener("click", () => {
+        modalQuickToken.hidden = false;
+        if (modalTokenInput) {
+          modalTokenInput.value = window.SOC_ANALYST_TOKEN || "";
+          modalTokenInput.focus();
+        }
+      });
+    }
+    if (btnBannerAuth && modalQuickToken) {
+      btnBannerAuth.addEventListener("click", () => {
+        modalQuickToken.hidden = false;
+        if (modalTokenInput) {
+          modalTokenInput.value = window.SOC_ANALYST_TOKEN || "";
+          modalTokenInput.focus();
+        }
+      });
+    }
+    if (modalCloseToken && modalQuickToken) {
+      modalCloseToken.addEventListener("click", () => {
+        modalQuickToken.hidden = true;
+      });
+    }
+    if (modalBtnSaveToken && modalQuickToken) {
+      modalBtnSaveToken.addEventListener("click", () => {
+        if (modalTokenInput) setToken(modalTokenInput.value);
+        modalQuickToken.hidden = true;
+      });
+    }
+    if (modalBtnClearToken && modalQuickToken) {
+      modalBtnClearToken.addEventListener("click", () => {
+        clearToken();
+        modalQuickToken.hidden = true;
+      });
+    }
+
+    // Close modal on escape or background click
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modalQuickToken && !modalQuickToken.hidden) {
+        modalQuickToken.hidden = true;
       }
     });
+
+    if (modalQuickToken) {
+      modalQuickToken.addEventListener("click", (e) => {
+        if (e.target === modalQuickToken) {
+          modalQuickToken.hidden = true;
+        }
+      });
+    }
   }
 
   // Live UTC Clock
@@ -854,17 +1914,25 @@
     const now = new Date();
     clockEl.textContent = `UTC ${now.toISOString().substring(11, 19)}`;
   }
+
+  // =========================================================================
+  // INITIALIZATION
+  // =========================================================================
+  setupEventListeners();
   updateClock();
   setInterval(updateClock, 1000);
 
-  // Expose globally for debug or testing
-  window.refreshMitreMatrix = refresh;
-  window.loadIncidentDetails = loadIncidentDetails;
-  window.focusIncidentBySignature = focusIncidentBySignature;
+  // Check initial hash route
+  handleHashChange();
 
-  // Initial fetch on page load
+  // Initial data fetch
   refresh();
 
   // Periodic polling every 10 seconds
   setInterval(refresh, 10000);
+
+  // Expose helpers globally
+  window.refresh = refresh;
+  window.switchView = switchView;
+  window.loadIncidentDetails = loadIncidentDetails;
 })();
