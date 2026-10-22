@@ -1,10 +1,19 @@
 // NOTE: Standalone reference copy. The active JavaScript served by Flask is in static/dashboard_component.js
 (() => {
   "use strict";
-  const base = (window.SOC_API_BASE || "").replace(/\\/$ /, "");
+  const base = (window.SOC_API_BASE || "").replace(/\/$/, "");
   const grid = document.getElementById("mitre-grid"), value = document.getElementById("resilience-value");
   const detail = document.getElementById("resilience-detail"), error = document.getElementById("mitre-error");
-  const classes = { UNTESTED: "state-gray", DETECTED: "state-amber", MITIGATED: "state-green" };
+  const classes = {
+    UNTESTED: "state-gray",
+    DETECTED: "state-amber",
+    MITIGATION_APPLIED: "state-cyan",
+    VERIFICATION_PENDING: "state-purple",
+    MITIGATED: "state-green",
+    VERIFIED: "state-green",
+    VERIFICATION_FAILED: "state-red",
+    EXPIRED: "state-slate"
+  };
   async function api(path, opts = {}) {
     const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
     if (window.SOC_ANALYST_TOKEN) headers.Authorization = `Bearer ${window.SOC_ANALYST_TOKEN}`;
@@ -39,8 +48,11 @@
       }
       card.append(actions); grid.append(card);
     }
-    value.textContent = data.resilience_index == null ? "N/A" : `${Number(data.resilience_index).toFixed(2)}%`;
-    detail.textContent = `${data.mitigated_techniques} mitigated / ${data.detected_techniques} detected techniques`;
+    const detCount = data.detected_techniques ?? 0;
+    const mitCount = data.mitigated_techniques ?? 0;
+    const formatted = data.resilience_index == null ? "N/A" : `${Number(data.resilience_index).toFixed(2)}%`;
+    value.textContent = formatted;
+    detail.textContent = detCount > 0 ? `${formatted} — ${mitCount} of ${detCount} detected techniques mitigated` : "No detected techniques";
   }
   async function refresh() {
     try { error.hidden = true; render(await api("/api/soc/mitre-matrix")); }

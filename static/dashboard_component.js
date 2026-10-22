@@ -424,7 +424,8 @@
   }
 
   function getStatusBadgeClass(status) {
-    switch (String(status || "").toUpperCase().trim()) {
+    const s = String(status || "").toUpperCase().trim().replace(/ /g, "_");
+    switch (s) {
       case "NEW": return "badge-neutral";
       case "TRIAGE": return "badge-amber";
       case "INVESTIGATING": return "badge-purple";
@@ -434,18 +435,81 @@
       case "CONTAINED": return "badge-verified";
       case "CLOSED": return "badge-neutral";
       case "APPROVED": return "badge-purple";
-      case "EXECUTED": return "badge-amber";
-      case "VERIFIED": return "badge-verified";
+      case "EXECUTED": return "badge-cyan";
       case "PENDING": return "badge-amber";
+      // 6 Core Defensive Lifecycle States
+      case "DETECTED": return "badge-amber";
+      case "MITIGATION_APPLIED": return "badge-cyan";
+      case "VERIFICATION_PENDING": return "badge-purple";
+      case "VERIFIED":
+      case "MITIGATED": return "badge-verified";
+      case "VERIFICATION_FAILED": return "badge-red";
+      case "EXPIRED": return "badge-slate";
+      case "UNTESTED": return "badge-neutral";
       default: return "badge-neutral";
     }
+  }
+
+  function getMitreStateCardClass(state) {
+    const s = String(state || "").toUpperCase().trim().replace(/ /g, "_");
+    switch (s) {
+      case "MITIGATED":
+      case "VERIFIED":
+        return "state-green";
+      case "DETECTED":
+        return "state-amber";
+      case "MITIGATION_APPLIED":
+        return "state-cyan";
+      case "VERIFICATION_PENDING":
+        return "state-purple";
+      case "VERIFICATION_FAILED":
+        return "state-red";
+      case "EXPIRED":
+        return "state-slate";
+      default:
+        return "state-gray";
+    }
+  }
+
+  function formatCountdown(seconds) {
+    if (seconds === null || seconds === undefined || seconds === "") return "N/A";
+    const sec = Number(seconds);
+    if (isNaN(sec)) return "N/A";
+    if (sec <= 0) return "Expired";
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}m ${s < 10 ? '0' : ''}${s}s`;
+  }
+
+  function parseIsoTimestamp(ts) {
+    if (!ts) return null;
+    if (typeof ts === "number") return isNaN(ts) ? null : ts;
+    let str = String(ts).trim();
+    if (!str || str === "N/A" || str === "None" || str === "null" || str === "undefined") {
+      return null;
+    }
+    // Handle double-suffix such as +00:00Z by removing trailing Z
+    if (/[+-]\d{2}:?\d{2}Z$/i.test(str)) {
+      str = str.slice(0, -1);
+    }
+    let d = new Date(str);
+    if (!isNaN(d.getTime())) return d.getTime();
+    if (!str.endsWith("Z") && !/[+-]\d{2}:?\d{2}$/.test(str)) {
+      d = new Date(str.replace(" ", "T") + "Z");
+      if (!isNaN(d.getTime())) return d.getTime();
+    } else {
+      d = new Date(str.replace(" ", "T"));
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+    return null;
   }
 
   function getRelativeTime(timestamp) {
     if (!timestamp) return "Unknown";
     try {
-      const date = new Date(timestamp.endsWith("Z") ? timestamp : timestamp + "Z");
-      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      const ms = parseIsoTimestamp(timestamp);
+      if (ms === null || isNaN(ms)) return timestamp;
+      const diffSec = Math.floor((Date.now() - ms) / 1000);
       if (diffSec < 60) return "Just now";
       if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
       if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
@@ -800,71 +864,147 @@
         detailSeverityBadge.textContent = String(inc.severity || "MEDIUM").toUpperCase();
       }
 
-      if (detailStatusBadge) {
-        detailStatusBadge.className = `badge ${getStatusBadgeClass(inc.status)}`;
-        detailStatusBadge.textContent = inc.status;
-      }
-
-      if (detailClassBadge) {
-        if (inc.classification) {
-          detailClassBadge.hidden = false;
-          detailClassBadge.className = `badge ${inc.classification === "CONFIRMED_MALICIOUS" ? "badge-critical" : "badge-neutral"}`;
-          detailClassBadge.textContent = inc.classification.replace(/_/g, " ");
-        } else {
-          detailClassBadge.hidden = true;
+        if (detailStatusBadge) {
+          detailStatusBadge.className = `badge ${getStatusBadgeClass(inc.status)}`;
+          detailStatusBadge.textContent = inc.status;
         }
-      }
 
-      if (detailSourceIp) detailSourceIp.textContent = inc.source_ip || "Not available";
-      if (detailTechniqueStr) detailTechniqueStr.textContent = `${inc.technique_name || "Unknown"} (${inc.technique_id || "N/A"}) · ${inc.signature || "N/A"}`;
-      if (detailCreatedAt) detailCreatedAt.textContent = inc.created_at || "Not available";
-      if (detailUpdatedAt) detailUpdatedAt.textContent = inc.updated_at || "Not available";
-
-      // Closure Banner
-      if (detailClosureInfo) {
-        if (inc.status === "CLOSED") {
-          detailClosureInfo.hidden = false;
-          if (detailClosedAt) detailClosedAt.textContent = inc.closed_at || "Not recorded";
-          if (detailClosedRationale) detailClosedRationale.textContent = inc.closure_rationale || "No rationale provided";
-        } else {
-          detailClosureInfo.hidden = true;
+        const detailDefenseBadge = document.getElementById("detail-defense-status-badge");
+        if (detailDefenseBadge) {
+          detailDefenseBadge.className = `badge ${getStatusBadgeClass(inc.defense_status || "DETECTED")}`;
+          detailDefenseBadge.textContent = (inc.defense_status || "DETECTED").toUpperCase();
         }
-      }
 
-      // B. Populate Summary KPI Cards
-      if (summaryAlertCount) summaryAlertCount.textContent = alerts.length;
-      if (summaryMitigatedCount) {
-        const verifiedMitigations = actions.filter(a => a.status === "VERIFIED").length;
-        summaryMitigatedCount.textContent = verifiedMitigations;
-      }
-      if (summaryStatusVal) summaryStatusVal.textContent = inc.status || "NEW";
-      if (summaryActionCount) summaryActionCount.textContent = actions.length;
-
-      // C. Update 8-Stage Workflow Stepper
-      updateWorkflowStepper(inc.status);
-
-      // Snapshot Quick Items
-      if (snapEventCount) snapEventCount.textContent = alerts.length;
-      if (snapContainmentBadge) {
-        const latestAct = actions.length > 0 ? actions[0] : null;
-        if (latestAct) {
-          snapContainmentBadge.className = `badge ${getStatusBadgeClass(latestAct.status)}`;
-          snapContainmentBadge.textContent = `${latestAct.action_type}: ${latestAct.status}`;
-        } else {
-          snapContainmentBadge.className = "badge badge-neutral";
-          snapContainmentBadge.textContent = "NONE QUEUED";
+        if (detailClassBadge) {
+          if (inc.classification) {
+            detailClassBadge.hidden = false;
+            detailClassBadge.className = `badge ${inc.classification === "CONFIRMED_MALICIOUS" ? "badge-critical" : "badge-neutral"}`;
+            detailClassBadge.textContent = inc.classification.replace(/_/g, " ");
+          } else {
+            detailClassBadge.hidden = true;
+          }
         }
-      }
 
-      // D. Populate Overview & Evidence Pane
-      if (evTechId) evTechId.textContent = inc.technique_id || "Not available";
-      if (evTechName) evTechName.textContent = inc.technique_name || "Not available";
-      if (evTactic) evTactic.textContent = inc.tactic || "Not available";
-      if (evSignature) evSignature.textContent = inc.signature || "Not available";
-      if (evMessage) {
-        const latestMsg = alerts.length > 0 ? (alerts[0].message || "No telemetry message") : "Not available";
-        evMessage.textContent = latestMsg;
-      }
+        if (detailSourceIp) detailSourceIp.textContent = inc.source_ip || "Not available";
+
+        const detailDestStr = document.getElementById("detail-destination-str");
+        if (detailDestStr) {
+          const firstA = alerts[0] || {};
+          const dst = firstA.destination_ip || "Perimeter";
+          const dport = firstA.destination_port ? `:${firstA.destination_port}` : "";
+          const proto = firstA.protocol || "TCP";
+          detailDestStr.textContent = `${dst}${dport} · ${proto}`;
+        }
+
+        const detailExpiryStr = document.getElementById("detail-expiry-str");
+        if (detailExpiryStr) {
+          const activeTemp = (inc.active_temporary_controls && inc.active_temporary_controls.length > 0) ? inc.active_temporary_controls[0] : null;
+          if (activeTemp) {
+            detailExpiryStr.textContent = `Active (${Math.max(0, activeTemp.time_remaining_seconds || 0)}s remaining)`;
+          } else if (actions.some(a => a.status === "EXPIRED" || a.is_expired)) {
+            detailExpiryStr.textContent = "Expired";
+          } else {
+            detailExpiryStr.textContent = "None / Permanent";
+          }
+        }
+
+        if (detailTechniqueStr) detailTechniqueStr.textContent = `${inc.technique_name || "Unknown"} (${inc.technique_id || "N/A"}) · ${inc.signature || "N/A"}`;
+        if (detailCreatedAt) detailCreatedAt.textContent = inc.created_at || "Not available";
+        if (detailUpdatedAt) detailUpdatedAt.textContent = inc.updated_at || "Not available";
+
+        // Closure Banner
+        if (detailClosureInfo) {
+          if (inc.status === "CLOSED") {
+            detailClosureInfo.hidden = false;
+            const isVer = inc.defense_status === "Verified";
+            detailClosureInfo.className = `closure-banner ${isVer ? "closure-verified" : "closure-unverified"}`;
+            const iconEl = detailClosureInfo.querySelector(".closure-icon");
+            if (iconEl) iconEl.textContent = isVer ? "✓" : "ℹ️";
+            const strongEl = detailClosureInfo.querySelector("strong");
+            if (strongEl) {
+              strongEl.textContent = isVer ? "Incident Resolved & Verified:" : "Incident Closed (Workflow Resolution — Containment Unverified):";
+            }
+            if (detailClosedAt) detailClosedAt.textContent = inc.closed_at || "Not recorded";
+            if (detailClosedRationale) detailClosedRationale.textContent = inc.closure_rationale || "No rationale provided";
+          } else {
+            detailClosureInfo.hidden = true;
+          }
+        }
+
+        // B. Populate Summary KPI Cards
+        if (summaryAlertCount) summaryAlertCount.textContent = alerts.length;
+
+        const summaryDefVal = document.getElementById("summary-defense-status-val");
+        const summaryDefSub = document.getElementById("summary-defense-sub");
+        if (summaryDefVal) {
+          summaryDefVal.textContent = (inc.defense_status || "DETECTED").toUpperCase();
+          summaryDefVal.className = `inc-kpi-val status-kpi-text ${getStatusBadgeClass(inc.defense_status || "DETECTED")}`;
+        }
+        if (summaryDefSub) {
+          summaryDefSub.textContent = `Lifecycle: ${inc.defense_status || "Detected"}`;
+        }
+
+        if (summaryMitigatedCount) {
+          const verifiedMitigations = actions.filter(a => a.status === "VERIFIED" && !a.is_expired).length;
+          summaryMitigatedCount.textContent = verifiedMitigations;
+        }
+        if (summaryStatusVal) summaryStatusVal.textContent = inc.status || "NEW";
+        if (summaryActionCount) summaryActionCount.textContent = actions.length;
+
+        // C. Update 8-Stage Workflow Stepper
+        updateWorkflowStepper(inc.status, inc.defense_status, actions);
+
+        // Snapshot Quick Items
+        if (snapEventCount) snapEventCount.textContent = alerts.length;
+        if (snapContainmentBadge) {
+          const latestAct = actions.length > 0 ? actions[0] : null;
+          if (latestAct) {
+            snapContainmentBadge.className = `badge ${getStatusBadgeClass(latestAct.defense_status || latestAct.status)}`;
+            snapContainmentBadge.textContent = `${latestAct.action_type}: ${latestAct.defense_status || latestAct.status}`;
+          } else {
+            snapContainmentBadge.className = "badge badge-neutral";
+            snapContainmentBadge.textContent = "NONE QUEUED";
+          }
+        }
+
+        // D. Populate Overview & Evidence Pane
+        if (evTechId) evTechId.textContent = inc.technique_id || "Not available";
+        if (evTechName) evTechName.textContent = inc.technique_name || "Not available";
+        if (evTactic) evTactic.textContent = inc.tactic || "Not available";
+        if (evSignature) evSignature.textContent = inc.signature || "Not available";
+
+        const evDestInfo = document.getElementById("ev-destination-info");
+        const evProtoInfo = document.getElementById("ev-protocol-info");
+        const evStructuredMeta = document.getElementById("ev-structured-metadata");
+        const evMetaCount = document.getElementById("ev-meta-count");
+
+        const firstAlert = alerts[0] || {};
+        if (evDestInfo) {
+          const dst = firstAlert.destination_ip || "Perimeter";
+          const dport = firstAlert.destination_port ? `:${firstAlert.destination_port}` : "";
+          evDestInfo.textContent = `${dst}${dport}`;
+        }
+        if (evProtoInfo) {
+          evProtoInfo.textContent = firstAlert.protocol || "TCP";
+        }
+        if (evStructuredMeta) {
+          let metaObj = firstAlert.metadata;
+          if (!metaObj && firstAlert.metadata_json) {
+            try { metaObj = JSON.parse(firstAlert.metadata_json); } catch {}
+          }
+          if (metaObj && typeof metaObj === "object" && Object.keys(metaObj).length > 0) {
+            evStructuredMeta.textContent = JSON.stringify(metaObj, null, 2);
+            if (evMetaCount) evMetaCount.textContent = `${Object.keys(metaObj).length} parameter(s)`;
+          } else {
+            evStructuredMeta.textContent = "No extra detection parameters recorded for this event.";
+            if (evMetaCount) evMetaCount.textContent = "0 attributes";
+          }
+        }
+
+        if (evMessage) {
+          const latestMsg = alerts.length > 0 ? (alerts[0].message || "No telemetry message") : "Not available";
+          evMessage.textContent = latestMsg;
+        }
 
       // E. Populate Correlated Alerts Table
       if (correlatedCount) correlatedCount.textContent = alerts.length;
@@ -938,8 +1078,69 @@
         }
       }
 
-      // H. Populate Response Actions History
+      // H. Populate Response Actions History & Containment Console
       if (incidentActionsContainer) {
+        // Active Temporary Control Timer Banner in Incident Pane
+        const incActiveBanner = document.getElementById("inc-active-control-banner");
+        const incTempActId = document.getElementById("inc-temp-act-id");
+        const incTempTargetIp = document.getElementById("inc-temp-target-ip");
+        const incTempCountdown = document.getElementById("inc-temp-countdown");
+        const incTempExpiryAt = document.getElementById("inc-temp-expiry-at");
+
+        const activeTemp = (inc.active_temporary_controls && inc.active_temporary_controls.length > 0) ? inc.active_temporary_controls[0] : null;
+        if (activeTemp && incActiveBanner) {
+          incActiveBanner.hidden = false;
+          if (incTempActId) incTempActId.textContent = activeTemp.action_id;
+          if (incTempTargetIp) incTempTargetIp.textContent = activeTemp.target_ip;
+          if (incTempCountdown) {
+            incTempCountdown.setAttribute("data-expires-at", activeTemp.expires_at || "");
+            incTempCountdown.textContent = `${formatCountdown(activeTemp.time_remaining_seconds || 0)} remaining`;
+          }
+          if (incTempExpiryAt) incTempExpiryAt.textContent = `Expires at: ${activeTemp.expires_at || "N/A"}`;
+        } else if (incActiveBanner) {
+          incActiveBanner.hidden = true;
+        }
+
+        // Verification Evidence Box in Incident Pane
+        const incVerBox = document.getElementById("inc-verification-evidence-box");
+        const incEvidenceRaw = document.getElementById("inc-evidence-raw");
+        const incVerifiedAtTag = document.getElementById("inc-verified-at-tag");
+        const incEvidencePill = document.getElementById("inc-evidence-status-pill");
+
+        const verifiedAction = actions.find(a => (a.status === "VERIFIED" || a.defense_status === "Verified") && a.verification_evidence);
+        const failedAction = actions.find(a => (a.status === "VERIFICATION_FAILED" || a.defense_status === "Verification Failed") && a.message);
+
+        if (verifiedAction && incVerBox && incEvidenceRaw) {
+          incVerBox.hidden = false;
+          incVerBox.style.background = "rgba(16, 185, 129, 0.08)";
+          incVerBox.style.borderColor = "rgba(16, 185, 129, 0.3)";
+          if (incEvidencePill) {
+            incEvidencePill.className = "badge badge-verified";
+            incEvidencePill.textContent = "VERIFIED";
+          }
+          if (incVerifiedAtTag) incVerifiedAtTag.textContent = `Verified at: ${verifiedAction.verified_at || verifiedAction.created_at || "N/A"}`;
+          let evDisplay = verifiedAction.verification_evidence;
+          try {
+            const parsed = JSON.parse(evDisplay);
+            evDisplay = JSON.stringify(parsed, null, 2);
+          } catch {}
+          incEvidenceRaw.textContent = evDisplay;
+          incEvidenceRaw.style.color = "#a7f3d0";
+        } else if (failedAction && incVerBox && incEvidenceRaw) {
+          incVerBox.hidden = false;
+          incVerBox.style.background = "rgba(239, 68, 68, 0.08)";
+          incVerBox.style.borderColor = "rgba(239, 68, 68, 0.3)";
+          if (incEvidencePill) {
+            incEvidencePill.className = "badge badge-red";
+            incEvidencePill.textContent = "VERIFICATION FAILED";
+          }
+          if (incVerifiedAtTag) incVerifiedAtTag.textContent = `Evaluated: ${failedAction.created_at || "N/A"}`;
+          incEvidenceRaw.textContent = `Verification failure reason: ${failedAction.message || "Target IP not found in host nftables set."}`;
+          incEvidenceRaw.style.color = "#fca5a5";
+        } else if (incVerBox) {
+          incVerBox.hidden = true;
+        }
+
         incidentActionsContainer.replaceChildren();
         if (actions.length === 0) {
           incidentActionsContainer.innerHTML = '<p class="muted p-no-actions">No response actions recorded for this incident. Use \'Request Containment\' to initiate a block.</p>';
@@ -949,11 +1150,24 @@
             const details = node("div", "action-details-text");
             details.append(node("strong", "", `Action #${act.action_id} — ${act.action_type}`));
             details.append(node("span", "text-xs", `Target: ${act.target_ip} · Triggered by: ${act.triggered_by}`));
-            details.append(node("span", "mono-text text-xs", `Created: ${act.created_at}${act.executed_at ? ` · Executed: ${act.executed_at}` : ""}`));
+
+            const timeoutText = act.timeout_seconds ? ` · Timeout: ${act.timeout_seconds}s` : " · Permanent";
+            details.append(node("span", "mono-text text-xs", `Created: ${act.created_at}${act.executed_at ? ` · Executed: ${act.executed_at}` : ""}${timeoutText}`));
+
+            if (act.is_temporary) {
+              const timerSpan = node("span", `countdown-pill ${act.is_expired ? "countdown-expired" : ""}`);
+              if (!act.is_expired && act.expires_at) {
+                timerSpan.setAttribute("data-expires-at", act.expires_at);
+                timerSpan.textContent = `⏱️ ${formatCountdown(act.time_remaining_seconds || 0)} remaining`;
+              } else {
+                timerSpan.textContent = "⏱️ Expired";
+              }
+              details.append(timerSpan);
+            }
             card.append(details);
 
             const rightCluster = node("div", "action-btn-cluster");
-            rightCluster.append(node("span", `badge ${getStatusBadgeClass(act.status)}`, act.status));
+            rightCluster.append(node("span", `badge ${getStatusBadgeClass(act.defense_status || act.status)}`, act.defense_status || act.status));
 
             // Contextual Approval & Verification Buttons
             if (act.status === "PENDING") {
@@ -961,12 +1175,28 @@
               appBtn.type = "button";
               appBtn.addEventListener("click", () => approveResponseAction(act.action_id));
               rightCluster.append(appBtn);
-            } else if (act.status === "EXECUTED" || act.status === "DRY_RUN") {
+            } else if (act.status === "VERIFIED") {
+              const reVerBtn = node("button", "btn btn-outline btn-xs", "Re-verify");
+              reVerBtn.type = "button";
+              reVerBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+              rightCluster.append(reVerBtn);
+            } else if (act.status === "VERIFICATION_FAILED") {
+              const retryBtn = node("button", "btn btn-primary btn-xs", "Retry Verification");
+              retryBtn.type = "button";
+              retryBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+              rightCluster.append(retryBtn);
+            } else {
               const verBtn = node("button", "btn btn-outline btn-sm", "Verify Mitigation");
               verBtn.type = "button";
-              verBtn.title = "Confirm block on host nftables to reflect as MITIGATED";
-              verBtn.addEventListener("click", () => verifyResponseAction(act.action_id));
+              verBtn.title = "Verify containment rule against host nftables";
+              verBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
               rightCluster.append(verBtn);
+
+              const pendBtn = node("button", "btn btn-secondary btn-xs", "Mark Pending");
+              pendBtn.type = "button";
+              pendBtn.title = "Mark as Verification Pending";
+              pendBtn.addEventListener("click", () => markActionVerificationPending(act.action_id));
+              rightCluster.append(pendBtn);
             }
 
             card.append(rightCluster);
@@ -987,21 +1217,30 @@
     }
   }
 
-  function updateWorkflowStepper(currentStatus) {
+  function updateWorkflowStepper(currentStatus, defenseStatus = null, actions = []) {
     if (!workflowStepper) return;
     const currentIndex = workflowOrder.indexOf(currentStatus);
     const nodes = workflowStepper.querySelectorAll(".step-node");
     const connectors = workflowStepper.querySelectorAll(".step-connector");
 
+    // Has verified containment occurred?
+    const hasVerifiedContainment = (actions && actions.some(a => a.status === "VERIFIED" && !a.is_expired)) ||
+                                   defenseStatus === "Verified";
+
     nodes.forEach(nodeEl => {
       const stepName = nodeEl.getAttribute("data-step");
       const stepIdx = workflowOrder.indexOf(stepName);
 
-      nodeEl.classList.remove("active", "completed", "future");
+      nodeEl.classList.remove("active", "completed", "future", "skipped");
       if (stepIdx === currentIndex) {
         nodeEl.classList.add("active");
       } else if (stepIdx < currentIndex) {
-        nodeEl.classList.add("completed");
+        // If this step is CONTAINED, only mark completed if containment was actually verified!
+        if (stepName === "CONTAINED" && !hasVerifiedContainment) {
+          nodeEl.classList.add("skipped");
+        } else {
+          nodeEl.classList.add("completed");
+        }
       } else {
         nodeEl.classList.add("future");
       }
@@ -1075,16 +1314,45 @@
     }
   }
 
-  async function verifyResponseAction(actionId) {
-    if (!confirm(`Verify that Containment Action #${actionId} exists on host nftables?\nThis will mark the technique MITIGATED in the matrix and transition incident to CONTAINED.`)) return;
+  let pendingVerifyActionId = null;
+  let pendingVerifyTargetIp = null;
+
+  function openVerificationModal(actionId, targetIp) {
+    pendingVerifyActionId = actionId;
+    pendingVerifyTargetIp = targetIp || "127.0.0.1";
+    const modal = document.getElementById("modal-verify-evidence");
+    const actIdSpan = document.getElementById("modal-verify-act-id");
+    const targetSpan = document.getElementById("modal-verify-target-ip");
+    const input = document.getElementById("modal-verify-input");
+
+    if (actIdSpan) actIdSpan.textContent = actionId;
+    if (targetSpan) targetSpan.textContent = pendingVerifyTargetIp;
+    if (input) {
+      input.value = `table inet filter {\n    set blocked_ips {\n        type ipv4_addr\n        elements = { ${pendingVerifyTargetIp} }\n    }\n}`;
+    }
+    if (modal) modal.hidden = false;
+  }
+
+  function closeVerificationModal() {
+    const modal = document.getElementById("modal-verify-evidence");
+    if (modal) modal.hidden = true;
+    pendingVerifyActionId = null;
+    pendingVerifyTargetIp = null;
+  }
+
+  async function markActionVerificationPending(actionId) {
     try {
-      const r = await api(`/api/soc/response-actions/${actionId}/verify`, { method: "POST" });
-      showToast(`Action #${r.action_id} verified against host nftables. Technique reflects MITIGATED.`, "success");
+      await api(`/api/soc/response-actions/${actionId}/pending-verification`, { method: "POST" });
+      showToast(`Action #${actionId} marked VERIFICATION PENDING`, "info");
       refresh();
       if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
     } catch (e) {
-      showToast(`Verification failed: ${e.message}`, "error");
+      showToast(`Failed to update status: ${e.message}`, "error");
     }
+  }
+
+  async function verifyResponseAction(actionId, targetIp = null) {
+    openVerificationModal(actionId, targetIp);
   }
 
   // =========================================================================
@@ -1097,11 +1365,19 @@
     targetGrids.forEach(g => {
       g.replaceChildren();
       for (const item of matrix) {
-        const card = node("div", `mitre-card ${item.state === "MITIGATED" ? "state-green" : (item.state === "DETECTED" ? "state-amber" : "state-gray")}`);
+        // Use defense_status if present to provide specific visual indication (e.g. state-purple for verification pending)
+        const visualState = item.defense_status || item.state;
+        const card = node("div", `mitre-card ${getMitreStateCardClass(visualState)}`);
 
         const top = node("div", "mitre-card-top");
         top.append(node("span", "mitre-id mono-text", item.technique_id));
-        top.append(node("span", `badge ${item.state === "MITIGATED" ? "badge-verified" : (item.state === "DETECTED" ? "badge-amber" : "badge-neutral")}`, item.state));
+        
+        const badgeCluster = node("div", "mitre-badge-cluster");
+        badgeCluster.append(node("span", `badge ${getStatusBadgeClass(item.state)}`, item.state.replace(/_/g, " ")));
+        if (item.defense_status && item.defense_status !== item.state) {
+          badgeCluster.append(node("span", `badge ${getStatusBadgeClass(item.defense_status)}`, item.defense_status.replace(/_/g, " ")));
+        }
+        top.append(badgeCluster);
         card.append(top);
 
         card.append(node("h3", "mitre-name", item.technique_name));
@@ -1128,12 +1404,42 @@
       }
     });
 
-    const formattedIndex = data.resilience_index == null ? "N/A" : `${Number(data.resilience_index).toFixed(2)}%`;
-    if (value) value.textContent = formattedIndex;
-    if (detail) detail.textContent = `${data.mitigated_techniques} mitigated / ${data.detected_techniques} detected techniques`;
-    if (statResilience) statResilience.textContent = formattedIndex;
-    if (statDetected) statDetected.textContent = data.detected_techniques ?? 0;
-    if (statMitigated) statMitigated.textContent = data.mitigated_techniques ?? 0;
+    const detCount = data.detected_techniques ?? 0;
+    const mitCount = data.mitigated_techniques ?? 0;
+    let formattedIndex = "N/A";
+    let detailText = "No detected techniques";
+    let cardSubtext = "No attack techniques detected";
+
+    if (detCount > 0 && data.resilience_index != null) {
+      const pct = Number(data.resilience_index).toFixed(2);
+      formattedIndex = `${pct}%`;
+      detailText = `${formattedIndex} — ${mitCount} of ${detCount} detected techniques mitigated`;
+      cardSubtext = `${mitCount} of ${detCount} detected techniques mitigated`;
+    } else if (detCount > 0) {
+      formattedIndex = "0.00%";
+      detailText = `0.00% — 0 of ${detCount} detected techniques mitigated`;
+      cardSubtext = `0 of ${detCount} detected techniques mitigated`;
+    }
+
+    if (value) {
+      value.textContent = formattedIndex;
+      value.title = "Purple Team Resilience Index = (Distinct detected techniques with verified mitigations / Distinct detected techniques) × 100";
+    }
+    if (detail) {
+      detail.textContent = detailText;
+      detail.title = "Distinct MITRE techniques: only detected techniques are counted in denominator";
+    }
+    if (statResilience) {
+      statResilience.textContent = formattedIndex;
+      statResilience.title = "Purple Team Resilience Index: authoritative backend calculation";
+    }
+    const cardResilience = document.getElementById("card-stat-resilience");
+    if (cardResilience) {
+      const sub = cardResilience.querySelector(".kpi-subtext");
+      if (sub) sub.textContent = cardSubtext;
+    }
+    if (statDetected) statDetected.textContent = detCount;
+    if (statMitigated) statMitigated.textContent = mitCount;
     if (statTotal) statTotal.textContent = matrix.length;
   }
 
@@ -1414,27 +1720,127 @@
   }
 
   // =========================================================================
-  // RESPONSE ACTIONS VIEW
+  // RESPONSE ACTIONS & TEMPORARY CONTROLS VIEW
   // =========================================================================
+  async function fetchResponseActions() {
+    try {
+      const data = await api("/api/soc/response-actions");
+      allResponseActions = data.actions || [];
+    } catch {
+      allResponseActions = [];
+      allIncidents.forEach(inc => {
+        if (inc.response_actions) {
+          allResponseActions.push(...inc.response_actions);
+        }
+      });
+    }
+
+    renderAllActionsTable();
+    renderTemporaryControlsCards();
+  }
+
+  function renderTemporaryControlsCards() {
+    const dashContainer = document.getElementById("dash-temp-controls-container");
+    const dashBadge = document.getElementById("dash-temp-controls-badge");
+    const statTempControls = document.getElementById("stat-temp-controls");
+    const actionsContainer = document.getElementById("actions-temp-controls-container");
+    const actionsBadge = document.getElementById("actions-temp-controls-badge");
+
+    const activeList = allResponseActions.filter(a => a.is_temporary && !a.is_expired && a.status !== "EXPIRED");
+
+    if (statTempControls) statTempControls.textContent = activeList.length;
+    if (dashBadge) dashBadge.textContent = `${activeList.length} Active Control${activeList.length === 1 ? "" : "s"}`;
+    if (actionsBadge) actionsBadge.textContent = `${activeList.length} Active`;
+
+    [dashContainer, actionsContainer].filter(Boolean).forEach(container => {
+      container.replaceChildren();
+      if (activeList.length === 0) {
+        container.innerHTML = '<p class="muted p-empty">No active temporary containment controls running.</p>';
+      } else {
+        activeList.forEach(act => {
+          const card = node("div", `temp-control-card ${act.is_dry_run ? "temp-control-simulated" : ""}`);
+
+          const head = node("div", "temp-card-header");
+          const targetWrapper = node("div", "d-flex align-center gap-6");
+          targetWrapper.style.display = "flex";
+          targetWrapper.style.alignItems = "center";
+          targetWrapper.style.gap = "6px";
+          targetWrapper.append(node("span", "temp-target-ip mono-text", act.target_ip));
+          if (act.is_dry_run || act.status === "DRY_RUN") {
+            targetWrapper.append(node("span", "badge badge-amber text-xs", "SIMULATED (DRY-RUN)"));
+          }
+          head.append(targetWrapper);
+
+          const timer = node("span", "countdown-pill");
+          if (act.expires_at) {
+            timer.setAttribute("data-expires-at", act.expires_at);
+            const initialSec = (act.time_remaining_seconds !== null && act.time_remaining_seconds !== undefined)
+              ? act.time_remaining_seconds
+              : (act.timeout_seconds || null);
+            if (initialSec !== null) {
+              timer.textContent = `⏱️ ${formatCountdown(initialSec)} remaining`;
+            } else {
+              timer.textContent = "⏱️ Active";
+            }
+          } else if (act.is_temporary && !act.is_expired) {
+            timer.textContent = act.timeout_seconds ? `⏱️ ${formatCountdown(act.timeout_seconds)} (Pending)` : "⏱️ Active";
+          } else {
+            timer.textContent = "⏱️ Expired";
+            timer.classList.add("countdown-expired");
+          }
+          head.append(timer);
+          card.append(head);
+
+          const meta1 = node("div", "temp-meta-row");
+          meta1.append(node("span", "", `Action #${act.action_id} (${act.action_type})`));
+          const defState = act.defense_status || act.status;
+          meta1.append(node("span", `badge ${getStatusBadgeClass(defState)}`, defState));
+          card.append(meta1);
+
+          const meta2 = node("div", "temp-meta-row");
+          meta2.append(node("span", "mono-text text-xs", act.incident_id ? `#INC-${act.incident_id}` : "Global"));
+          const expText = act.expires_at ? act.expires_at.replace("T", " ").substring(0, 19) + " UTC" : (act.timeout_seconds ? `On execution (${act.timeout_seconds}s)` : "N/A");
+          meta2.append(node("span", "mono-text text-xs", `Expires: ${expText}`));
+          card.append(meta2);
+
+          const actionsRow = node("div", "d-flex gap-8 justify-end mt-4");
+          actionsRow.style.marginTop = "6px";
+          actionsRow.style.display = "flex";
+          actionsRow.style.gap = "6px";
+          actionsRow.style.justifyContent = "flex-end";
+
+          if (act.status !== "VERIFIED") {
+            const verBtn = node("button", "btn btn-outline btn-xs", act.is_dry_run ? "Verify (Simulated)" : "Verify");
+            verBtn.type = "button";
+            verBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+            actionsRow.append(verBtn);
+          }
+
+          if (act.incident_id) {
+            const incBtn = node("button", "btn btn-secondary btn-xs", "View Incident");
+            incBtn.type = "button";
+            incBtn.addEventListener("click", () => switchView("incident-detail", act.incident_id));
+            actionsRow.append(incBtn);
+          }
+
+          card.append(actionsRow);
+          container.append(card);
+        });
+      }
+    });
+  }
+
   function renderAllActionsTable() {
     const allActionsBody = document.getElementById("all-actions-body");
     if (!allActionsBody) return;
     allActionsBody.replaceChildren();
-
-    // Flatten all actions from all incidents
-    allResponseActions = [];
-    allIncidents.forEach(inc => {
-      if (inc.response_actions) {
-        allResponseActions.push(...inc.response_actions);
-      }
-    });
 
     if (sidebarActionBadge) {
       sidebarActionBadge.textContent = allResponseActions.length;
     }
 
     if (allResponseActions.length === 0) {
-      allActionsBody.innerHTML = '<tr><td colspan="9" class="text-center muted">No response actions queued or executed.</td></tr>';
+      allActionsBody.innerHTML = '<tr><td colspan="10" class="text-center muted">No response actions queued or executed.</td></tr>';
       return;
     }
 
@@ -1442,31 +1848,114 @@
       const tr = node("tr");
       tr.append(node("td", "mono-text", `#ACT-${act.action_id}`));
       tr.append(node("td", "mono-text", act.incident_id ? `#INC-${act.incident_id}` : "Global"));
-      tr.append(node("td", "mono-text", act.target_ip));
-      tr.append(node("td", "mono-text", act.action_type));
 
-      const tdStatus = node("td");
-      tdStatus.append(node("span", `badge ${getStatusBadgeClass(act.status)}`, act.status));
-      tr.append(tdStatus);
+      // Target IP with simulation indicator if dry-run
+      const tdTarget = node("td", "mono-text font-bold");
+      tdTarget.textContent = act.target_ip;
+      if (act.is_dry_run || act.status === "DRY_RUN") {
+        const simBadge = node("span", "badge badge-amber text-xs ml-1", "DRY-RUN");
+        simBadge.style.marginLeft = "6px";
+        tdTarget.append(simBadge);
+      }
+      tr.append(tdTarget);
 
+      // Action Type
+      const tdType = node("td", "mono-text");
+      tdType.textContent = act.action_type;
+      tr.append(tdType);
+
+      // 5. Defense Status
+      const tdDefStatus = node("td");
+      const defState = act.defense_status || act.status;
+      tdDefStatus.append(node("span", `badge ${getStatusBadgeClass(defState)}`, defState));
+      tr.append(tdDefStatus);
+
+      // 6. Timeout / Expiry
+      const tdExpiry = node("td");
+      if (act.is_temporary) {
+        const pill = node("span", `countdown-pill ${act.is_expired ? "countdown-expired" : ""}`);
+        if (!act.is_expired && act.expires_at) {
+          pill.setAttribute("data-expires-at", act.expires_at);
+          const initialSec = (act.time_remaining_seconds !== null && act.time_remaining_seconds !== undefined)
+            ? act.time_remaining_seconds
+            : (act.timeout_seconds || null);
+          pill.textContent = initialSec !== null ? `⏱️ ${formatCountdown(initialSec)} remaining` : "⏱️ Active";
+        } else if (!act.is_expired) {
+          pill.textContent = act.timeout_seconds ? `⏱️ ${formatCountdown(act.timeout_seconds)} (Pending)` : "⏱️ Active";
+        } else {
+          pill.textContent = "⏱️ Expired";
+        }
+        tdExpiry.append(pill);
+      } else {
+        tdExpiry.append(node("span", "text-xs muted", "Permanent"));
+      }
+      tr.append(tdExpiry);
+
+      // 7. Verification Evidence
+      const tdEv = node("td");
+      if (act.verification_evidence) {
+        const evBtn = node("button", "btn btn-outline btn-xs mono-text", "Proof ✓");
+        evBtn.type = "button";
+        evBtn.title = "View independent firewall verification evidence";
+        evBtn.addEventListener("click", () => {
+          openVerificationModal(act.action_id, act.target_ip);
+          const input = document.getElementById("modal-verify-input");
+          if (input) {
+            try {
+              input.value = JSON.stringify(JSON.parse(act.verification_evidence), null, 2);
+            } catch {
+              input.value = act.verification_evidence;
+            }
+          }
+        });
+        tdEv.append(evBtn);
+      } else if (act.status === "VERIFICATION_FAILED") {
+        tdEv.append(node("span", "badge badge-red text-xs", "Failed"));
+      } else {
+        tdEv.append(node("span", "text-xs muted", "Unverified"));
+      }
+      tr.append(tdEv);
+
+      // 8. Triggered By
       tr.append(node("td", "", act.triggered_by));
-      tr.append(node("td", "mono-text text-xs", act.created_at || ""));
-      tr.append(node("td", "mono-text text-xs", act.executed_at || "—"));
 
+      // 9. Executed
+      tr.append(node("td", "mono-text text-xs", act.executed_at ? act.executed_at.replace("T", " ").substring(0, 19) : (act.created_at ? act.created_at.replace("T", " ").substring(0, 19) + " (Created)" : "Pending")));
+
+      // 10. Actions
       const tdAct = node("td");
+      const btnCluster = node("div", "d-flex gap-4");
+      btnCluster.style.display = "flex";
+      btnCluster.style.gap = "4px";
+
       if (act.status === "PENDING") {
         const appBtn = node("button", "btn btn-primary btn-xs", "Approve");
         appBtn.type = "button";
         appBtn.addEventListener("click", () => approveResponseAction(act.action_id));
-        tdAct.append(appBtn);
-      } else if (act.status === "EXECUTED" || act.status === "DRY_RUN") {
-        const verBtn = node("button", "btn btn-outline btn-xs", "Verify nftables");
-        verBtn.type = "button";
-        verBtn.addEventListener("click", () => verifyResponseAction(act.action_id));
-        tdAct.append(verBtn);
+        btnCluster.append(appBtn);
+      } else if (act.status === "VERIFIED") {
+        const reBtn = node("button", "btn btn-outline btn-xs", "Re-verify");
+        reBtn.type = "button";
+        reBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+        btnCluster.append(reBtn);
+      } else if (act.status === "VERIFICATION_FAILED") {
+        const retryBtn = node("button", "btn btn-primary btn-xs", "Retry Verify");
+        retryBtn.type = "button";
+        retryBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+        btnCluster.append(retryBtn);
       } else {
-        tdAct.append(node("span", "text-xs muted", "Complete"));
+        const verBtn = node("button", "btn btn-outline btn-xs", act.is_dry_run ? "Verify (Simulated)" : "Verify nftables");
+        verBtn.type = "button";
+        verBtn.addEventListener("click", () => openVerificationModal(act.action_id, act.target_ip));
+        btnCluster.append(verBtn);
       }
+      if (act.incident_id) {
+        const viewIncBtn = node("button", "btn btn-secondary btn-xs", "Incident");
+        viewIncBtn.type = "button";
+        viewIncBtn.addEventListener("click", () => switchView("incident-detail", act.incident_id));
+        btnCluster.append(viewIncBtn);
+      }
+      tdAct.append(btnCluster);
       tr.append(tdAct);
 
       allActionsBody.append(tr);
@@ -1490,6 +1979,7 @@
         updateAuthBadge("authenticated");
         await fetchIncidents();
         await fetchAlerts();
+        await fetchResponseActions();
         await fetchReports();
       } else {
         updateAuthBadge("unauthenticated");
@@ -1906,6 +2396,74 @@
         }
       });
     }
+
+    // Verify Mitigation Evidence Modal Listeners
+    const modalVerifyEvidence = document.getElementById("modal-verify-evidence");
+    const modalCloseVerify = document.getElementById("modal-close-verify");
+    const modalBtnCancelVerify = document.getElementById("modal-btn-cancel-verify");
+    const modalBtnConfirmVerify = document.getElementById("modal-btn-confirm-verify");
+    const btnHelperNft = document.getElementById("btn-helper-nft-proof");
+    const btnHelperDryRun = document.getElementById("btn-helper-dryrun-reject");
+
+    if (modalCloseVerify) modalCloseVerify.addEventListener("click", closeVerificationModal);
+    if (modalBtnCancelVerify) modalBtnCancelVerify.addEventListener("click", closeVerificationModal);
+
+    if (btnHelperNft) {
+      btnHelperNft.addEventListener("click", () => {
+        const input = document.getElementById("modal-verify-input");
+        const ip = pendingVerifyTargetIp || "127.0.0.1";
+        if (input) {
+          input.value = `table inet filter {\n    set blocked_ips {\n        type ipv4_addr\n        elements = { ${ip} }\n    }\n}`;
+        }
+      });
+    }
+
+    if (btnHelperDryRun) {
+      btnHelperDryRun.addEventListener("click", () => {
+        const input = document.getElementById("modal-verify-input");
+        if (input) {
+          input.value = `[DRY_RUN] Action completed via agent simulation. Target not found in kernel nftables set.`;
+        }
+      });
+    }
+
+    if (modalBtnConfirmVerify) {
+      modalBtnConfirmVerify.addEventListener("click", async () => {
+        if (!pendingVerifyActionId) return;
+        const input = document.getElementById("modal-verify-input");
+        const evidence = (input ? input.value : "").trim();
+        if (!evidence) {
+          showToast("Please enter verification evidence before confirming.", "error");
+          return;
+        }
+
+        modalBtnConfirmVerify.disabled = true;
+        try {
+          const res = await api(`/api/soc/response-actions/${pendingVerifyActionId}/verify`, {
+            method: "POST",
+            body: JSON.stringify({ evidence: evidence })
+          });
+          if (res.verified) {
+            showToast(`Action #${res.action_id} verified against host nftables! (Defense Status: VERIFIED)`, "success");
+          } else {
+            showToast(`Verification FAILED for Action #${res.action_id}: ${res.error || res.message}`, "error");
+          }
+          closeVerificationModal();
+          refresh();
+          if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
+        } catch (e) {
+          showToast(`Verification request failed: ${e.message}`, "error");
+        } finally {
+          modalBtnConfirmVerify.disabled = false;
+        }
+      });
+    }
+
+    if (modalVerifyEvidence) {
+      modalVerifyEvidence.addEventListener("click", (e) => {
+        if (e.target === modalVerifyEvidence) closeVerificationModal();
+      });
+    }
   }
 
   // Live UTC Clock
@@ -1915,12 +2473,37 @@
     clockEl.textContent = `UTC ${now.toISOString().substring(11, 19)}`;
   }
 
+  // Live 1-Second Countdown Ticker for Active Temporary Controls
+  function updateTemporaryControlCountdowns() {
+    document.querySelectorAll("[data-expires-at]").forEach(el => {
+      const expIso = el.getAttribute("data-expires-at");
+      if (!expIso || expIso === "N/A" || expIso === "None" || expIso === "null" || expIso === "undefined") {
+        el.textContent = "⏱️ Active";
+        return;
+      }
+      const expMs = parseIsoTimestamp(expIso);
+      if (expMs === null || isNaN(expMs)) {
+        el.textContent = "⏱️ Active";
+        return;
+      }
+      const diffSec = Math.floor((expMs - Date.now()) / 1000);
+      if (diffSec <= 0) {
+        el.textContent = "⏱️ Expired";
+        el.classList.add("countdown-expired");
+      } else {
+        el.textContent = `⏱️ ${formatCountdown(diffSec)} remaining`;
+        el.classList.remove("countdown-expired");
+      }
+    });
+  }
+
   // =========================================================================
   // INITIALIZATION
   // =========================================================================
   setupEventListeners();
   updateClock();
   setInterval(updateClock, 1000);
+  setInterval(updateTemporaryControlCountdowns, 1000);
 
   // Check initial hash route
   handleHashChange();
@@ -1935,4 +2518,7 @@
   window.refresh = refresh;
   window.switchView = switchView;
   window.loadIncidentDetails = loadIncidentDetails;
+  window.openVerificationModal = openVerificationModal;
+  window.closeVerificationModal = closeVerificationModal;
+  window.verifyResponseAction = verifyResponseAction;
 })();

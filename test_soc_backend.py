@@ -1394,6 +1394,1262 @@ class TestDefensiveSocBackend(unittest.TestCase):
         r_bad_verify = self.client.post("/api/soc/response-actions/999999/verify", headers=analyst_headers)
         self.assertEqual(r_bad_verify.status_code, 404)
 
+    # -------------------------------------------------------------------------
+    # 28. Defense Status Transitions (Detected -> Applied -> Pending -> Verified -> Expired)
+    # -------------------------------------------------------------------------
+    def test_28_defense_status_transitions(self):
+        """Test full defense status lifecycle: Detected -> Mitigation Applied -> Verification Pending -> Verified."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "198.51.100.41"
+
+        # 1. Ingest alert -> status is DETECTED
+        r1 = self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip,
+            "signature": "SQL_INJECTION",
+            "severity": "high",
+            "message": "SELECT * FROM users WHERE id=' OR '1'='1"
+        })
+        self.assertEqual(r1.status_code, 202)
+        inc_id = r1.get_json()["incident_id"]
+
+        r_inc = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc.status_code, 200)
+        self.assertEqual(r_inc.get_json()["incident"]["defense_status"], "Detected")
+
+        # 2. Queue containment action -> PENDING
+        r_block = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": target_ip, "incident_id": inc_id, "timeout_seconds": 600
+        })
+        self.assertEqual(r_block.status_code, 202)
+        aid = r_block.get_json()["action_id"]
+
+        # 3. Approve action -> APPROVED
+        r_app = self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.assertEqual(r_app.status_code, 200)
+
+        # 4. Agent reports execution / mitigation applied -> MITIGATION_APPLIED
+        r_exec = self.client.post("/api/agent/action-status", headers=agent_h, json={
+            "action_id": aid, "status": "MITIGATION_APPLIED", "message": "nftables rule appended"
+        })
+        self.assertEqual(r_exec.status_code, 200)
+
+        r_inc2 = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc2.get_json()["incident"]["defense_status"], "Mitigation Applied")
+
+        # 5. Analyst marks verification pending -> VERIFICATION_PENDING
+        r_pend = self.client.post(f"/api/soc/response-actions/{aid}/pending-verification", headers=analyst_h)
+        self.assertEqual(r_pend.status_code, 200)
+
+        r_inc3 = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc3.get_json()["incident"]["defense_status"], "Verification Pending")
+
+        # 6. Verify with authentic nftables evidence -> VERIFIED
+        nft_proof = f"""
+        table inet filter {{
+            set blocked_ips {{
+                type ipv4_addr
+                elements = {{ {target_ip} }}
+            }}
+        }}
+        """
+        r_ver = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": nft_proof
+        })
+        self.assertEqual(r_ver.status_code, 200)
+        self.assertTrue(r_ver.get_json()["verified"])
+        self.assertEqual(r_ver.get_json()["status"], "VERIFIED")
+
+        r_inc4 = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc4.get_json()["incident"]["defense_status"], "Verified")
+
+        # Verify matrix reflects MITIGATED
+        r_mat = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        item = next(x for x in r_mat.get_json()["matrix"] if x["signature"] == "SQL_INJECTION")
+        self.assertEqual(item["state"], "MITIGATED")
+        self.assertGreaterEqual(item["mitigated_count"], 1)
+
+    # -------------------------------------------------------------------------
+    # 29. Verification Evidence Validation & Fraud Prevention
+    # -------------------------------------------------------------------------
+    def test_29_evidence_validation(self):
+        """Test verification evidence validation: rejects simulation/mismatches, accepts valid proofs."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "198.51.100.52"
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "COMMAND_INJECTION", "severity": "high"
+        })
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": target_ip})
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # A: Reject dry-run / simulation without kernel proof
+        r_dry = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": "[DRY_RUN] Simulated containment executed without nftables kernel modification."
+        })
+        self.assertEqual(r_dry.status_code, 200)
+        self.assertFalse(r_dry.get_json()["verified"])
+        self.assertEqual(r_dry.get_json()["status"], "VERIFICATION_FAILED")
+
+        # B: Reject evidence with target IP mismatch
+        r_mismatch = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": "table inet filter { set blocked_ips { elements = { 10.0.0.99 } } }"
+        })
+        self.assertEqual(r_mismatch.status_code, 200)
+        self.assertFalse(r_mismatch.get_json()["verified"])
+        self.assertEqual(r_mismatch.get_json()["status"], "VERIFICATION_FAILED")
+        self.assertTrue(
+            "does not match" in r_mismatch.get_json()["error"] or "do not contain" in r_mismatch.get_json()["error"]
+        )
+
+        # C: Accept authentic proof with matching target IP
+        r_valid = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertEqual(r_valid.status_code, 200)
+        self.assertTrue(r_valid.get_json()["verified"])
+        self.assertEqual(r_valid.get_json()["status"], "VERIFIED")
+
+    # -------------------------------------------------------------------------
+    # 30. Duplicate Events Deduplication & Idempotency
+    # -------------------------------------------------------------------------
+    def test_30_duplicate_events(self):
+        """Test idempotent deduplication with identical event_id preserving state."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        unique_eid = "dup_test_event_998877"
+        target_ip = "198.51.100.63"
+
+        # First ingestion
+        r1 = self.client.post("/api/events", headers=agent_h, json={
+            "event_id": unique_eid,
+            "source_ip": target_ip,
+            "signature": "PORT_SCAN",
+            "severity": "medium",
+            "message": "Initial port probe"
+        })
+        self.assertEqual(r1.status_code, 202)
+        orig_inc = r1.get_json()["incident_id"]
+
+        # Duplicate ingestion with same event_id
+        r2 = self.client.post("/api/events", headers=agent_h, json={
+            "event_id": unique_eid,
+            "source_ip": target_ip,
+            "signature": "PORT_SCAN",
+            "severity": "medium",
+            "message": "Duplicate port probe transmission"
+        })
+        self.assertEqual(r2.status_code, 202)
+        self.assertEqual(r2.get_json()["event_id"], unique_eid)
+        self.assertEqual(r2.get_json()["incident_id"], orig_inc)
+
+        # Check alert count for this incident is exactly 1
+        r_alerts = self.client.get(f"/api/soc/alerts?source_ip={target_ip}", headers=analyst_h)
+        self.assertEqual(r_alerts.status_code, 200)
+        matching = [a for a in r_alerts.get_json()["alerts"] if a["event_id"] == unique_eid]
+        self.assertEqual(len(matching), 1)
+
+    # -------------------------------------------------------------------------
+    # 31. Temporary Controls and Automatic Expiry
+    # -------------------------------------------------------------------------
+    def test_31_temporary_controls_and_expiry(self):
+        """Test temporary control countdown, expiry transition, and exclusion from verified mitigation count."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "198.51.100.74"
+
+        # Ingest PATH_TRAVERSAL
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "PATH_TRAVERSAL", "severity": "high"
+        })
+
+        # Queue temporary block with 30s timeout
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": target_ip, "timeout_seconds": 30
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Verify action
+        r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertTrue(r_v.get_json()["verified"])
+
+        # Check temporary controls endpoint: active
+        r_temp = self.client.get("/api/soc/temporary-controls", headers=analyst_h)
+        self.assertEqual(r_temp.status_code, 200)
+        self.assertTrue(any(a["action_id"] == aid and not a["is_expired"] for a in r_temp.get_json()["active_controls"]))
+
+        # Check matrix: MITIGATED
+        r_m1 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        item1 = next(x for x in r_m1.get_json()["matrix"] if x["signature"] == "PATH_TRAVERSAL")
+        self.assertEqual(item1["state"], "MITIGATED")
+        self.assertGreaterEqual(item1["mitigated_count"], 1)
+
+        # Simulate expiration by rewinding timestamps in database
+        past_ts = "2020-01-01T00:00:00Z"
+        with db() as c:
+            c.execute("UPDATE response_actions SET created_at = ?, executed_at = ? WHERE action_id = ?",
+                      (past_ts, past_ts, aid))
+
+        # Check matrix after expiration: must NOT count as mitigated!
+        r_m2 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        item2 = next(x for x in r_m2.get_json()["matrix"] if x["signature"] == "PATH_TRAVERSAL")
+        self.assertEqual(item2["mitigated_count"], 0)
+        self.assertIn(item2["state"], ("EXPIRED", "DETECTED"))
+
+        # Check response actions list: action is marked expired
+        r_acts = self.client.get("/api/soc/response-actions", headers=analyst_h)
+        act_row = next(a for a in r_acts.get_json()["actions"] if a["action_id"] == aid)
+        self.assertTrue(act_row["is_expired"])
+        self.assertEqual(act_row["defense_status"], "Expired")
+
+    # -------------------------------------------------------------------------
+    # 32. Failed Verification & Incident Closure Protection
+    # -------------------------------------------------------------------------
+    def test_32_failed_verification_and_closure_protection(self):
+        """Closing an incident must NEVER mark it verified without independent proof."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "198.51.100.85"
+
+        r = self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "BRUTE_FORCE_AUTH", "severity": "medium"
+        })
+        inc_id = r.get_json()["incident_id"]
+
+        # Close incident with valid rationale
+        r_close = self.client.post(f"/api/soc/incidents/{inc_id}/status", headers=analyst_h, json={
+            "status": "CLOSED",
+            "rationale": "Analyst determined source stopped attempting auth."
+        })
+        self.assertEqual(r_close.status_code, 200)
+        self.assertEqual(r_close.get_json()["new_status"], "CLOSED")
+
+        # Verify defense status does NOT become 'Verified' merely because incident is closed!
+        r_inc = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertNotEqual(r_inc.get_json()["incident"]["defense_status"], "Verified")
+
+        # MITRE matrix must still show mitigated_count = 0
+        r_m = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        item = next(x for x in r_m.get_json()["matrix"] if x["signature"] == "BRUTE_FORCE_AUTH")
+        self.assertEqual(item["mitigated_count"], 0)
+        self.assertNotEqual(item["state"], "MITIGATED")
+
+    # -------------------------------------------------------------------------
+    # 33. Secure Portal Rich Metadata Consumption
+    # -------------------------------------------------------------------------
+    def test_33_secure_portal_rich_metadata_consumption(self):
+        """Verify the dashboard backend stores and returns Secure Portal's rich telemetry and metadata."""
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "198.51.100.96"
+
+        portal_event = {
+            "source_ip": target_ip,
+            "signature": "PORT_SCAN",
+            "severity": "medium",
+            "destination_ip": "10.0.0.5",
+            "destination_port": 80,
+            "protocol": "TCP",
+            "metadata": {
+                "distinct_ports_count": 14,
+                "observed_ports": [22, 80, 443, 8080, 8443],
+                "duration_seconds": 2.5,
+                "tcp_flags": ["SYN"],
+                "trigger": "SYN probe burst threshold exceeded"
+            }
+        }
+
+        r = self.client.post("/api/events", headers=agent_h, json=portal_event)
+        self.assertEqual(r.status_code, 202)
+        eid = r.get_json()["event_id"]
+        inc_id = r.get_json()["incident_id"]
+
+        # Fetch alert list and incident details
+        r_al = self.client.get(f"/api/soc/alerts?source_ip={target_ip}", headers=analyst_h)
+        self.assertEqual(r_al.status_code, 200)
+        alt = next(a for a in r_al.get_json()["alerts"] if a["event_id"] == eid)
+        self.assertEqual(alt["destination_ip"], "10.0.0.5")
+        self.assertEqual(alt["destination_port"], 80)
+        self.assertEqual(alt["protocol"], "TCP")
+        self.assertEqual(alt["metadata"]["distinct_ports_count"], 14)
+        self.assertEqual(alt["metadata"]["trigger"], "SYN probe burst threshold exceeded")
+
+        r_inc = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc.status_code, 200)
+        inc_alt = r_inc.get_json()["alerts"][0]
+        self.assertEqual(inc_alt["destination_ip"], "10.0.0.5")
+
+    # -------------------------------------------------------------------------
+    # 34. Response Actions and Temporary Controls Endpoints
+    # -------------------------------------------------------------------------
+    def test_34_response_actions_and_temporary_controls_endpoints(self):
+        """Test /api/soc/response-actions and /api/soc/temporary-controls endpoints."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+
+        r_acts = self.client.get("/api/soc/response-actions", headers=analyst_h)
+        self.assertEqual(r_acts.status_code, 200)
+        data = r_acts.get_json()
+        self.assertIn("actions", data)
+        self.assertIn("active_temporary_controls_count", data)
+        self.assertIn("expired_controls_count", data)
+        self.assertIn("verified_count", data)
+
+        r_temp = self.client.get("/api/soc/temporary-controls", headers=analyst_h)
+        self.assertEqual(r_temp.status_code, 200)
+        tdata = r_temp.get_json()
+        self.assertIn("active_controls", tdata)
+        self.assertIn("expired_controls", tdata)
+
+    # -------------------------------------------------------------------------
+    # 35. Database Initialization and Idempotency
+    # -------------------------------------------------------------------------
+    def test_35_db_initialization_and_idempotency(self):
+        """Test creating a fresh database from scratch, verifying idempotency and schema."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "fresh_soc.db")
+
+            # Initial initialization
+            init_db(db_path)
+
+            # Verify idempotency by calling init_db again
+            init_db(db_path)
+
+            with db(db_path) as c:
+                # Verify foreign key integrity
+                fks = c.execute("PRAGMA foreign_key_check").fetchall()
+                self.assertEqual(len(fks), 0)
+
+                # Verify all tables exist
+                tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                for expected_table in ["alerts", "response_actions", "incidents", "incident_notes", "reports"]:
+                    self.assertIn(expected_table, tables)
+
+                # Verify columns in incidents
+                inc_cols = {r[1] for r in c.execute("PRAGMA table_info(incidents)").fetchall()}
+                self.assertIn("defense_status", inc_cols)
+                self.assertIn("verification_evidence", inc_cols)
+                self.assertIn("status", inc_cols)
+
+                # Verify columns in response_actions
+                act_cols = {r[1] for r in c.execute("PRAGMA table_info(response_actions)").fetchall()}
+                self.assertIn("verification_evidence", act_cols)
+                self.assertIn("verified_at", act_cols)
+                self.assertIn("expires_at", act_cols)
+
+    # -------------------------------------------------------------------------
+    # 36. Legacy Database Migration and Foreign Key Integrity
+    # -------------------------------------------------------------------------
+    def test_36_legacy_database_migration_and_foreign_key_integrity(self):
+        """Test migration of a legacy database with pre-existing alerts, incidents, notes, and foreign keys."""
+        with tempfile.TemporaryDirectory() as td:
+            legacy_db = str(Path(td) / "legacy_soc.db")
+
+            # Create pre-migration schema matching the starter baseline
+            con = sqlite3.connect(legacy_db)
+            con.execute("PRAGMA foreign_keys = ON")
+            con.executescript("""
+            CREATE TABLE alerts(
+              id INTEGER PRIMARY KEY, event_id TEXT UNIQUE, source_ip TEXT NOT NULL,
+              signature TEXT NOT NULL, severity TEXT NOT NULL, timestamp TEXT NOT NULL,
+              message TEXT NOT NULL DEFAULT '', mitre_id TEXT, incident_id INTEGER REFERENCES incidents(incident_id));
+
+            CREATE TABLE response_actions(
+              action_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER,
+              target_ip TEXT NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('BLOCK_IP','UNBLOCK_IP')),
+              status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','EXECUTED','FAILED','CANCELLED','DRY_RUN','VERIFIED')),
+              triggered_by TEXT NOT NULL CHECK(triggered_by IN ('AUTO_RULE','SOC_ANALYST')),
+              created_at TEXT NOT NULL, executed_at TEXT, timeout_seconds INTEGER,
+              message TEXT NOT NULL DEFAULT '');
+
+            CREATE TABLE incidents(
+              incident_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('NEW','TRIAGE','INVESTIGATING','CLASSIFIED','RESPONSE_REQUESTED','CONTAINMENT_PENDING_APPROVAL','CONTAINED','CLOSED')) DEFAULT 'NEW',
+              classification TEXT CHECK(classification IN ('CONFIRMED_MALICIOUS','BENIGN_AUTHORIZED_TESTING','INCONCLUSIVE', NULL)),
+              classification_rationale TEXT NOT NULL DEFAULT '',
+              severity TEXT NOT NULL DEFAULT 'medium',
+              source_ip TEXT NOT NULL,
+              signature TEXT NOT NULL,
+              mitre_id TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              closed_at TEXT,
+              closure_rationale TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE incident_notes(
+              note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              incident_id INTEGER NOT NULL REFERENCES incidents(incident_id),
+              author TEXT NOT NULL DEFAULT 'SOC_ANALYST',
+              created_at TEXT NOT NULL,
+              note_text TEXT NOT NULL,
+              note_type TEXT NOT NULL DEFAULT 'ANALYST_NOTE' CHECK(note_type IN ('ANALYST_NOTE','STATUS_CHANGE','CLASSIFICATION','CONTAINMENT_REQUEST','SYSTEM'))
+            );
+
+            CREATE TABLE reports(
+              report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              incident_id INTEGER REFERENCES incidents(incident_id) ON DELETE SET NULL,
+              title TEXT NOT NULL,
+              report_type TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              findings TEXT NOT NULL,
+              date_range TEXT,
+              author TEXT NOT NULL DEFAULT 'SOC_ANALYST',
+              created_at TEXT NOT NULL,
+              content_json TEXT
+            );
+            """)
+
+            # Insert pre-existing records with foreign key relationships
+            con.execute("""
+            INSERT INTO incidents (incident_id, title, status, severity, source_ip, signature, created_at, updated_at)
+            VALUES (1, 'Legacy Incident 1', 'NEW', 'high', '198.51.100.10', 'SQL_INJECTION', '2026-10-20T10:00:00Z', '2026-10-20T10:00:00Z')
+            """)
+            con.execute("""
+            INSERT INTO incidents (incident_id, title, status, severity, source_ip, signature, created_at, updated_at, closed_at, closure_rationale)
+            VALUES (2, 'Legacy Incident 2', 'CLOSED', 'medium', '198.51.100.20', 'PORT_SCAN', '2026-10-20T11:00:00Z', '2026-10-20T12:00:00Z', '2026-10-20T12:00:00Z', 'Resolved')
+            """)
+            con.execute("""
+            INSERT INTO alerts (id, event_id, source_ip, signature, severity, timestamp, message, incident_id)
+            VALUES (101, 'evt-101', '198.51.100.10', 'SQL_INJECTION', 'high', '2026-10-20T10:00:00Z', 'SQLi attempt', 1)
+            """)
+            con.execute("""
+            INSERT INTO incident_notes (note_id, incident_id, author, created_at, note_text, note_type)
+            VALUES (201, 1, 'SOC_ANALYST', '2026-10-20T10:05:00Z', 'Investigating alert', 'ANALYST_NOTE')
+            """)
+            con.execute("""
+            INSERT INTO reports (report_id, incident_id, title, report_type, summary, findings, created_at)
+            VALUES (301, 2, 'Incident 2 Summary', 'INCIDENT_CLOSURE', 'Summary of port scan', 'No impact', '2026-10-20T12:05:00Z')
+            """)
+            con.execute("""
+            INSERT INTO response_actions (action_id, incident_id, target_ip, action_type, status, triggered_by, created_at)
+            VALUES (401, 1, '198.51.100.10', 'BLOCK_IP', 'EXECUTED', 'SOC_ANALYST', '2026-10-20T10:10:00Z')
+            """)
+            con.commit()
+            con.close()
+
+            # Execute migration via init_db
+            init_db(legacy_db)
+
+            # Execute second time to test idempotency
+            init_db(legacy_db)
+
+            # Verify all data and foreign key integrity
+            with db(legacy_db) as c:
+                fks = c.execute("PRAGMA foreign_key_check").fetchall()
+                self.assertEqual(len(fks), 0, f"Foreign key violations after migration: {fks}")
+
+                # Verify row counts preserved
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM incidents").fetchone()[0], 2)
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM alerts").fetchone()[0], 1)
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM incident_notes").fetchone()[0], 1)
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM reports").fetchone()[0], 1)
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM response_actions").fetchone()[0], 1)
+
+                # Verify defense_status column populated properly without altering workflow statuses
+                inc1 = dict(c.execute("SELECT * FROM incidents WHERE incident_id = 1").fetchone())
+                self.assertEqual(inc1["status"], "NEW")
+                self.assertEqual(inc1["defense_status"], "Detected")
+
+                inc2 = dict(c.execute("SELECT * FROM incidents WHERE incident_id = 2").fetchone())
+                self.assertEqual(inc2["status"], "CLOSED")
+                self.assertEqual(inc2["defense_status"], "Detected")
+
+                # Verify response_actions supports new statuses like EXPIRED
+                c.execute("INSERT INTO response_actions (incident_id, target_ip, action_type, status, triggered_by, created_at) VALUES (1, '198.51.100.10', 'BLOCK_IP', 'EXPIRED', 'AUTO_RULE', '2026-10-21T00:00:00Z')")
+                c.execute("DELETE FROM response_actions WHERE status = 'EXPIRED' AND incident_id = 1")
+
+    # -------------------------------------------------------------------------
+    # 37. Incident Workflow Status vs. Defense Status Separation
+    # -------------------------------------------------------------------------
+    def test_37_incident_workflow_vs_defense_status_separation(self):
+        """Test strict separation of workflow status and defense status, verifying that DETECTED cannot be set as a workflow status."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.77"
+
+        # 1. Database schema CHECK constraint rejection of DETECTED in status column
+        with db(self.test_db_path) as c:
+            with self.assertRaises(sqlite3.IntegrityError):
+                c.execute("INSERT INTO incidents (title, status, severity, source_ip, signature, created_at, updated_at) VALUES ('Test Invalid', 'DETECTED', 'low', ?, 'PORT_SCAN', '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')", (target_ip,))
+
+        # 2. Ingest an alert: initial workflow status must be 'NEW', defense_status must be 'Detected'
+        r_ev = self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip,
+            "signature": "PORT_SCAN",
+            "severity": "medium"
+        })
+        self.assertEqual(r_ev.status_code, 202)
+        inc_id = r_ev.get_json()["incident_id"]
+
+        r_inc = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        self.assertEqual(r_inc.status_code, 200)
+        inc_data = r_inc.get_json()["incident"]
+        self.assertEqual(inc_data["status"], "NEW")
+        self.assertEqual(inc_data["defense_status"], "Detected")
+
+        # 3. Attempting to transition workflow status to 'DETECTED' must be rejected (HTTP 400)
+        r_bad_status = self.client.post(f"/api/soc/incidents/{inc_id}/status", headers=analyst_h, json={
+            "status": "DETECTED"
+        })
+        self.assertEqual(r_bad_status.status_code, 400)
+        self.assertIn("Invalid status", r_bad_status.get_json()["error"])
+
+        # 4. Valid workflow status transitions work as expected
+        r_triage = self.client.post(f"/api/soc/incidents/{inc_id}/status", headers=analyst_h, json={
+            "status": "TRIAGE"
+        })
+        self.assertEqual(r_triage.status_code, 200)
+        self.assertEqual(r_triage.get_json()["new_status"], "TRIAGE")
+
+        # 5. Closing the incident does NOT falsely mark defense status as 'Verified'
+        r_close = self.client.post(f"/api/soc/incidents/{inc_id}/status", headers=analyst_h, json={
+            "status": "CLOSED",
+            "rationale": "Closed after investigation without mitigation"
+        })
+        self.assertEqual(r_close.status_code, 200)
+        self.assertEqual(r_close.get_json()["new_status"], "CLOSED")
+
+        r_inc_closed = self.client.get(f"/api/soc/incidents/{inc_id}", headers=analyst_h)
+        closed_data = r_inc_closed.get_json()["incident"]
+        self.assertEqual(closed_data["status"], "CLOSED")
+        self.assertNotEqual(closed_data["defense_status"], "Verified")
+        self.assertEqual(closed_data["defense_status"], "Detected")
+
+    # -------------------------------------------------------------------------
+    # 38. Valid Temporary Containment Countdown & Expiry Fields
+    # -------------------------------------------------------------------------
+    def test_38_countdown_calculation_and_expiry_fields(self):
+        """Test countdown calculation produces valid seconds remaining and UTC ISO expires_at with Z suffix."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.81"
+
+        # Create incident and approved response action with 1800s timeout
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "BRUTE_FORCE", "severity": "medium"
+        })
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": target_ip, "timeout_seconds": 1800
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+
+        # Action is executed by agent 300s ago relative to current time
+        import time
+        from datetime import datetime, timezone
+        now_epoch = int(time.time())
+        exec_epoch = now_epoch - 300
+        exec_iso = datetime.fromtimestamp(exec_epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'EXECUTED', executed_at = ? WHERE action_id = ?", (exec_iso, aid))
+
+        # Test compute_action_expiry with current time = exec_epoch + 300s (5 minutes in)
+        with db(self.test_db_path) as c:
+            act = dict(c.execute("SELECT * FROM response_actions WHERE action_id = ?", (aid,)).fetchone())
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(act, current_time=exec_epoch + 300)
+        self.assertFalse(is_exp)
+        self.assertEqual(rem, 1500)
+        self.assertTrue(exp_iso.endswith("Z"), f"Expected UTC Z suffix, got {exp_iso}")
+        self.assertNotIn("+00:00Z", exp_iso)
+
+        # Query GET /api/soc/response-actions and verify fields
+        r_actions = self.client.get("/api/soc/response-actions", headers=analyst_h)
+        self.assertEqual(r_actions.status_code, 200)
+        acts = r_actions.get_json()["actions"]
+        matching = next(a for a in acts if a["action_id"] == aid)
+        self.assertTrue(matching["is_temporary"])
+        self.assertIsNotNone(matching["expires_at"])
+        self.assertTrue(matching["expires_at"].endswith("Z"))
+        self.assertEqual(matching["enforcement_type"], "REAL")
+
+        # Query GET /api/soc/temporary-controls
+        r_temp = self.client.get("/api/soc/temporary-controls", headers=analyst_h)
+        self.assertEqual(r_temp.status_code, 200)
+        temp_data = r_temp.get_json()
+        self.assertGreaterEqual(temp_data["active_count"], 1)
+        active_match = next(a for a in temp_data["active_controls"] if a["action_id"] == aid)
+        self.assertEqual(active_match["target_ip"], target_ip)
+
+    # -------------------------------------------------------------------------
+    # 39. Timestamp Parsing and Safe Fallbacks
+    # -------------------------------------------------------------------------
+    def test_39_timestamp_parsing_and_safe_fallbacks(self):
+        """Test parse_iso_ts and compute_action_expiry safely handle missing, invalid, and timezone-qualified timestamps."""
+        # Standard UTC with Z
+        t_z = soc_backend.parse_iso_ts("2026-10-22T02:00:00Z")
+        self.assertIsInstance(t_z, float)
+
+        # Standard with +00:00 offset
+        t_plus = soc_backend.parse_iso_ts("2026-10-22T02:00:00+00:00")
+        self.assertEqual(t_z, t_plus)
+
+        # Timezone with non-UTC offset (+05:30)
+        t_ist = soc_backend.parse_iso_ts("2026-10-22T07:30:00+05:30")
+        self.assertEqual(t_z, t_ist)
+
+        # Space-separated format
+        t_space = soc_backend.parse_iso_ts("2026-10-22 02:00:00")
+        self.assertIsInstance(t_space, float)
+
+        # Missing or empty timestamp falls back safely without raising
+        t_none = soc_backend.parse_iso_ts(None)
+        self.assertIsInstance(t_none, float)
+
+        t_empty = soc_backend.parse_iso_ts("")
+        self.assertIsInstance(t_empty, float)
+
+        # Malformed or invalid string falls back safely without raising
+        t_invalid = soc_backend.parse_iso_ts("CORRUPTED_TIMESTAMP_VALUE")
+        self.assertIsInstance(t_invalid, float)
+
+        # compute_action_expiry on malformed or missing timestamps never raises exception
+        act_corrupt = {
+            "action_id": 999,
+            "timeout_seconds": "invalid_number",
+            "executed_at": "bad_date",
+            "status": "EXECUTED"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(act_corrupt)
+        self.assertFalse(is_exp)
+        self.assertIsNone(rem)
+        self.assertIsNone(exp_iso)
+
+    # -------------------------------------------------------------------------
+    # 40. Expired Temporary Controls & MITRE ATT&CK Exclusion
+    # -------------------------------------------------------------------------
+    def test_40_expired_temporary_controls_and_mitre_exclusion(self):
+        """Test temporary controls transition to EXPIRED when elapsed and are excluded from verified mitigations."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.82"
+
+        # Ingest attack and verify containment
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "SQL_INJECTION", "severity": "high"
+        })
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": target_ip, "timeout_seconds": 600
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Verify containment with authentic host nftables proof
+        r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertEqual(r_v.get_json()["status"], "VERIFIED")
+
+        # MITRE matrix reflects 1 verified mitigation
+        r_m1 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m1.get_json()["mitigated_techniques"], 1)
+
+        # Fast forward time past 600s timeout by backdating executed_at by 1200 seconds
+        past_ts = "2025-01-01T00:00:00Z"
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET executed_at = ? WHERE action_id = ?", (past_ts, aid))
+
+        # Requesting temporary controls triggers check_and_update_expired_controls
+        r_temp = self.client.get("/api/soc/temporary-controls", headers=analyst_h)
+        self.assertEqual(r_temp.status_code, 200)
+        t_data = r_temp.get_json()
+        expired_aids = [a["action_id"] for a in t_data["expired_controls"]]
+        self.assertIn(aid, expired_aids)
+
+        # Verify action status in DB is EXPIRED
+        with db(self.test_db_path) as c:
+            act_db = dict(c.execute("SELECT status FROM response_actions WHERE action_id = ?", (aid,)).fetchone() or {})
+        self.assertEqual(act_db.get("status"), "EXPIRED")
+        # Expired actions are excluded from active temporary controls count
+        r_actions = self.client.get("/api/soc/response-actions", headers=analyst_h)
+        self.assertEqual(r_actions.get_json()["active_temporary_controls_count"], 0)
+
+        # MITRE matrix must EXCLUDE expired actions from verified mitigations!
+        r_m2 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m2.get_json()["mitigated_techniques"], 0)
+
+    # -------------------------------------------------------------------------
+    # 41. Dry-Run Verification Rejection and Strict Firewall Proof
+    # -------------------------------------------------------------------------
+    def test_41_dry_run_verification_rejection_and_strict_nftables_proof(self):
+        """Test dry-run actions cannot be marked verified, and arbitrary text or non-blocking rules are rejected."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.83"
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "PORT_SCAN", "severity": "medium"
+        })
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": target_ip})
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+
+        # 1. Action executed with DRY_RUN status
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'DRY_RUN', message = 'Simulated block by SOAR' WHERE action_id = ?", (aid,))
+
+        # Verify must REJECT dry-run actions even if authentic-looking syntax is provided
+        r_dry_exec = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertEqual(r_dry_exec.status_code, 200)
+        self.assertFalse(r_dry_exec.get_json()["verified"])
+        self.assertEqual(r_dry_exec.get_json()["status"], "VERIFICATION_FAILED")
+        self.assertIn("DRY_RUN simulation mode", r_dry_exec.get_json()["error"])
+
+        # Reset action to EXECUTED for testing invalid evidence rejection
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'EXECUTED', message = 'Rule added' WHERE action_id = ?", (aid,))
+
+        # 2. Reject arbitrary text without firewall syntax
+        r_arbitrary = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"Target {target_ip} is definitely blocked because we saw 0 packets in logs."
+        })
+        self.assertEqual(r_arbitrary.status_code, 200)
+        self.assertFalse(r_arbitrary.get_json()["verified"])
+        self.assertIn("arbitrary text without valid firewall", r_arbitrary.get_json()["error"])
+
+        # 3. Reject non-blocking rules (e.g. accept without drop or set blocked_ips)
+        r_accept = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ chain input {{ ip saddr {target_ip} accept }} }}"
+        })
+        self.assertEqual(r_accept.status_code, 200)
+        self.assertFalse(r_accept.get_json()["verified"])
+        self.assertIn("does not demonstrate an active drop/reject", r_accept.get_json()["error"])
+
+        # 4. Reject dry-run note in evidence
+        r_ev_dry = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"[DRY_RUN] table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertEqual(r_ev_dry.status_code, 200)
+        self.assertFalse(r_ev_dry.get_json()["verified"])
+        self.assertIn("DRY_RUN simulation mode", r_ev_dry.get_json()["error"])
+
+        # 5. Accept genuine containment proof
+        r_valid = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+        })
+        self.assertEqual(r_valid.status_code, 200)
+        self.assertTrue(r_valid.get_json()["verified"])
+        self.assertEqual(r_valid.get_json()["status"], "VERIFIED")
+
+    # -------------------------------------------------------------------------
+    # 42. Preservation of Action ACT-4 in VERIFICATION_PENDING Status
+    # -------------------------------------------------------------------------
+    def test_42_preserve_act4_verification_pending_status(self):
+        """Test Action ACT-4 for INC-4 is preserved in VERIFICATION_PENDING with unverified evidence without expiring."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        target_ip = "192.168.31.98"
+
+        with db(self.test_db_path) as c:
+            # Seed Incident INC-4
+            c.execute("""
+                INSERT INTO incidents (incident_id, title, status, severity, source_ip, signature, defense_status, created_at, updated_at)
+                VALUES (4, 'Brute Force detected from 192.168.31.98', 'CONTAINMENT_PENDING_APPROVAL', 'medium', ?, 'BRUTE_FORCE', 'Verification Pending', '2026-10-22T00:13:23+00:00', '2026-10-22T00:13:23+00:00')
+            """, (target_ip,))
+            # Seed Action ACT-4 in VERIFICATION_PENDING with timeout 1800s and unverified evidence
+            c.execute("""
+                INSERT INTO response_actions (action_id, incident_id, target_ip, action_type, status, triggered_by, timeout_seconds, created_at, executed_at, verification_evidence)
+                VALUES (4, 4, ?, 'BLOCK_IP', 'VERIFICATION_PENDING', 'SOC_ANALYST', 1800, '2026-10-22T00:13:23+00:00', NULL, NULL)
+            """, (target_ip,))
+
+        # Run expiry check (simulate passage of time)
+        with db(self.test_db_path) as c:
+            soc_backend.check_and_update_expired_controls(c)
+
+        # ACT-4 must NOT be transitioned to EXPIRED; its status must be preserved
+        with db(self.test_db_path) as c:
+            act = dict(c.execute("SELECT * FROM response_actions WHERE action_id = 4").fetchone())
+            inc = dict(c.execute("SELECT * FROM incidents WHERE incident_id = 4").fetchone())
+
+        self.assertEqual(act["status"], "VERIFICATION_PENDING")
+        self.assertIsNone(act["verification_evidence"])
+        self.assertEqual(inc["defense_status"], "Verification Pending")
+
+        # GET /api/soc/response-actions returns defense_status 'Verification Pending' and unverified evidence
+        r_act = self.client.get("/api/soc/response-actions", headers=analyst_h)
+        self.assertEqual(r_act.status_code, 200)
+        acts = r_act.get_json()["actions"]
+        act4 = next(a for a in acts if a["action_id"] == 4)
+        self.assertEqual(act4["defense_status"], "Verification Pending")
+        self.assertIsNone(act4["evidence_parsed"])
+        self.assertFalse(act4["is_expired"])
+
+        # GET /api/soc/temporary-controls lists ACT-4 in active controls with 'Verification Pending'
+        r_temp = self.client.get("/api/soc/temporary-controls", headers=analyst_h)
+        self.assertEqual(r_temp.status_code, 200)
+        temp_data = r_temp.get_json()
+        active_aids = [a["action_id"] for a in temp_data["active_controls"]]
+        self.assertIn(4, active_aids)
+        temp_act4 = next(a for a in temp_data["active_controls"] if a["action_id"] == 4)
+        self.assertEqual(temp_act4["defense_status"], "Verification Pending")
+
+
+class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
+    """
+    Dedicated End-to-End Regression Test Suite for Purple Team Resilience Index,
+    MITRE ATT&CK Matrix derivation, and Response Action Verification Workflow.
+    Covers all 13 required scenarios from Section 9.
+    """
+
+    def test_01_no_detected_techniques_resilience_is_na(self):
+        """Scenario 1: No detected techniques returns resilience_index as None (N/A) with 0 detected."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertIsNone(data["resilience_index"])
+        self.assertEqual(data["detected_techniques"], 0)
+        self.assertEqual(data["mitigated_techniques"], 0)
+        # All matrix techniques should be UNTESTED
+        for item in data["matrix"]:
+            self.assertEqual(item["state"], "UNTESTED")
+            self.assertEqual(item["alert_count"], 0)
+            self.assertEqual(item["mitigated_count"], 0)
+
+    def test_02_detected_techniques_with_no_verified_mitigation_is_zero(self):
+        """Scenario 2: Detected techniques with no verified mitigation yields 0.0% resilience."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        # Ingest alerts for 2 different techniques: PORT_SCAN (T1046) and SQL_INJECTION (T1190)
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.1", "signature": "PORT_SCAN", "severity": "medium"
+        })
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.2", "signature": "SQL_INJECTION", "severity": "high"
+        })
+
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["detected_techniques"], 2)
+        self.assertEqual(data["mitigated_techniques"], 0)
+        self.assertEqual(data["resilience_index"], 0.0)
+
+        # Both detected techniques must be DETECTED (amber), not MITIGATED
+        states = {item["technique_id"]: item["state"] for item in data["matrix"]}
+        self.assertEqual(states["T1046"], "DETECTED")
+        self.assertEqual(states["T1190"], "DETECTED")
+
+    def test_03_one_of_several_detected_techniques_verified(self):
+        """Scenario 3: 1 of 2 detected techniques verified yields 50.0% resilience index."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.10", "signature": "PORT_SCAN", "severity": "medium"
+        })
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.20", "signature": "SQL_INJECTION", "severity": "high"
+        })
+
+        # Get actual incident_id created by event
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'PORT_SCAN'").fetchone())
+            inc_id = inc["incident_id"]
+
+        # Queue block action for PORT_SCAN
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": "198.51.100.10", "incident_id": inc_id, "timeout_seconds": 1800
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Verify with authentic nftables evidence
+        nft_proof = "table inet filter { set blocked_ips { type ipv4_addr; elements = { 198.51.100.10 } } }"
+        r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={"evidence": nft_proof})
+        self.assertTrue(r_v.get_json()["verified"])
+
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+        self.assertEqual(data["detected_techniques"], 2)
+        self.assertEqual(data["mitigated_techniques"], 1)
+        self.assertEqual(data["resilience_index"], 50.0)
+
+        tech_map = {item["technique_id"]: item for item in data["matrix"]}
+        self.assertEqual(tech_map["T1046"]["state"], "MITIGATED")
+        self.assertEqual(tech_map["T1046"]["defense_status"], "Verified")
+        self.assertEqual(tech_map["T1190"]["state"], "DETECTED")
+
+    def test_04_duplicate_alerts_and_multiple_actions_do_not_inflate_index(self):
+        """Scenario 4: Duplicate alerts & multiple actions for the same technique do not inflate percentage."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        # 5 duplicate alerts for PORT_SCAN (T1046) from IP 1
+        for _ in range(5):
+            self.client.post("/api/events", headers=agent_h, json={
+                "source_ip": "198.51.100.11", "signature": "PORT_SCAN", "severity": "medium"
+            })
+        # 3 duplicate alerts for PORT_SCAN (T1046) from IP 2
+        for _ in range(3):
+            self.client.post("/api/events", headers=agent_h, json={
+                "source_ip": "198.51.100.12", "signature": "PORT_SCAN", "severity": "medium"
+            })
+
+        # Retrieve actual incident_id created
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'PORT_SCAN'").fetchone())
+            inc_id = inc["incident_id"]
+
+        # 2 verified actions for PORT_SCAN (for IP 1 and IP 2)
+        for ip in ["198.51.100.11", "198.51.100.12"]:
+            r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": ip, "incident_id": inc_id})
+            aid = r_b.get_json()["action_id"]
+            self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+            self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+            self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+                "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {ip} }} }} }}"
+            })
+
+        # Ingest 1 alert for SQL_INJECTION (T1190)
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.50", "signature": "SQL_INJECTION", "severity": "high"
+        })
+
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+
+        # Denominator: distinct techniques = 2 (T1046, T1190)
+        self.assertEqual(data["detected_techniques"], 2)
+        # Numerator: distinct mitigated techniques = 1 (T1046)
+        self.assertEqual(data["mitigated_techniques"], 1)
+        # Exactly 50.0% (1/2), NOT 2/2 or 2/9
+        self.assertEqual(data["resilience_index"], 50.0)
+
+    def test_05_execution_without_verification_does_not_turn_technique_green(self):
+        """Scenario 5: Execution without verification leaves technique as DETECTED (amber)."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.33", "signature": "COMMAND_INJECTION", "severity": "critical"
+        })
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'COMMAND_INJECTION'").fetchone())
+            inc_id = inc["incident_id"]
+
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": "198.51.100.33", "incident_id": inc_id})
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        # Agent executed action, but no verification proof submitted
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+        self.assertEqual(data["mitigated_techniques"], 0)
+        self.assertEqual(data["resilience_index"], 0.0)
+
+        tech = next(t for t in data["matrix"] if t["signature"] == "COMMAND_INJECTION")
+        self.assertEqual(tech["state"], "DETECTED")
+        self.assertEqual(tech["defense_status"], "Mitigation Applied")
+        self.assertEqual(tech["mitigated_count"], 0)
+
+    def test_06_dry_run_evidence_cannot_qualify_as_real_host_containment(self):
+        """Scenario 6: Dry-run evidence cannot qualify as real host-firewall containment."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "192.168.31.98", "signature": "BRUTE_FORCE_AUTH", "severity": "medium"
+        })
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'BRUTE_FORCE_AUTH'").fetchone())
+            inc_id = inc["incident_id"]
+
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": "192.168.31.98", "incident_id": inc_id})
+        aid = r_b.get_json()["action_id"]
+
+        # Mark action DRY_RUN
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'DRY_RUN', message = 'Simulated block by SOAR' WHERE action_id = ?", (aid,))
+
+        # Attempt verification with dry-run evidence
+        r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": "[DRY_RUN] table inet filter { set blocked_ips { elements = { 192.168.31.98 } } }"
+        })
+        self.assertFalse(r_v.get_json()["verified"])
+        self.assertEqual(r_v.get_json()["status"], "VERIFICATION_FAILED")
+
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+        tech = next(t for t in data["matrix"] if t["technique_id"] == "T1110")
+        self.assertEqual(tech["state"], "DETECTED")
+        self.assertEqual(data["mitigated_techniques"], 0)
+        self.assertEqual(data["resilience_index"], 0.0)
+
+    def test_07_verified_mitigation_updates_only_correctly_linked_technique(self):
+        """Scenario 7: Verified action for one technique does not turn unrelated techniques green."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        shared_ip = "198.51.100.77"
+
+        # Attacker uses shared_ip for both PORT_SCAN (T1046) and SQL_INJECTION (T1190)
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": shared_ip, "signature": "PORT_SCAN", "severity": "medium"
+        })
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": shared_ip, "signature": "SQL_INJECTION", "severity": "high"
+        })
+
+        # Find incident IDs
+        with db(self.test_db_path) as c:
+            inc1 = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'PORT_SCAN'").fetchone())
+            inc2 = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'SQL_INJECTION'").fetchone())
+
+        # Block IP specifically linked to Incident 1 (PORT_SCAN)
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": shared_ip, "incident_id": inc1["incident_id"]
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Verify action
+        self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {shared_ip} }} }} }}"
+        })
+
+        # Check MITRE matrix
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+        tech_map = {t["technique_id"]: t for t in data["matrix"]}
+
+        # PORT_SCAN (T1046) must be MITIGATED
+        self.assertEqual(tech_map["T1046"]["state"], "MITIGATED")
+        # SQL_INJECTION (T1190) must REMAIN DETECTED even though source_ip is identical!
+        self.assertEqual(tech_map["T1190"]["state"], "DETECTED")
+        self.assertEqual(tech_map["T1190"]["mitigated_count"], 0)
+
+        self.assertEqual(data["detected_techniques"], 2)
+        self.assertEqual(data["mitigated_techniques"], 1)
+        self.assertEqual(data["resilience_index"], 50.0)
+
+    def test_08_invalid_expired_failed_rolled_back_mitigation_not_active(self):
+        """Scenario 8: Expired, failed, or rolled-back mitigations drop technique back to DETECTED."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.66"
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "PORT_SCAN", "severity": "medium"
+        })
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'PORT_SCAN'").fetchone())
+            inc_id = inc["incident_id"]
+
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={
+            "target_ip": target_ip, "incident_id": inc_id, "timeout_seconds": 300
+        })
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Verified
+        self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+        })
+        r_m1 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m1.get_json()["mitigated_techniques"], 1)
+
+        # 8a: Expire action
+        past_ts = "2024-01-01T00:00:00Z"
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET executed_at = ? WHERE action_id = ?", (past_ts, aid))
+            soc_backend.check_and_update_expired_controls(c)
+
+        r_m2 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m2.get_json()["mitigated_techniques"], 0)
+        self.assertEqual(r_m2.get_json()["resilience_index"], 0.0)
+        tech_exp = next(t for t in r_m2.get_json()["matrix"] if t["technique_id"] == "T1046")
+        self.assertEqual(tech_exp["state"], "DETECTED")
+        self.assertEqual(tech_exp["defense_status"], "Expired")
+
+        # 8b: Verification Failed
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'VERIFICATION_FAILED' WHERE action_id = ?", (aid,))
+        r_m3 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m3.get_json()["mitigated_techniques"], 0)
+        tech_fail = next(t for t in r_m3.get_json()["matrix"] if t["technique_id"] == "T1046")
+        self.assertEqual(tech_fail["state"], "DETECTED")
+
+        # 8c: Rolled Back / Cancelled
+        with db(self.test_db_path) as c:
+            c.execute("UPDATE response_actions SET status = 'CANCELLED' WHERE action_id = ?", (aid,))
+        r_m4 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r_m4.get_json()["mitigated_techniques"], 0)
+        tech_rb = next(t for t in r_m4.get_json()["matrix"] if t["technique_id"] == "T1046")
+        self.assertEqual(tech_rb["state"], "DETECTED")
+
+    def test_09_incident_closure_alone_does_not_turn_technique_green(self):
+        """Scenario 9: Incident workflow closure alone does not mark MITRE mitigation as verified."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": "198.51.100.88", "signature": "PATH_TRAVERSAL", "severity": "high"
+        })
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'PATH_TRAVERSAL'").fetchone())
+            inc_id = inc["incident_id"]
+
+        # Transition incident directly to CLOSED with rationale
+        r_c = self.client.post(f"/api/soc/incidents/{inc_id}/status", headers=analyst_h, json={
+            "status": "CLOSED", "rationale": "Closed as false positive after review."
+        })
+        self.assertEqual(r_c.status_code, 200)
+
+        # Technique must remain DETECTED (amber), NOT MITIGATED (green)
+        res = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        data = res.get_json()
+        self.assertEqual(data["mitigated_techniques"], 0)
+        self.assertEqual(data["resilience_index"], 0.0)
+
+        tech = next(t for t in data["matrix"] if t["signature"] == "PATH_TRAVERSAL")
+        self.assertEqual(tech["state"], "DETECTED")
+        self.assertEqual(tech["mitigated_count"], 0)
+
+    def test_10_verification_updates_mitre_api_immediately(self):
+        """Scenario 10: Live refresh immediately reflects verified action without restarting server."""
+        analyst_h = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        target_ip = "198.51.100.123"
+
+        self.client.post("/api/events", headers=agent_h, json={
+            "source_ip": target_ip, "signature": "DIR_FUZZ", "severity": "medium"
+        })
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT incident_id FROM incidents WHERE signature = 'DIR_FUZZ'").fetchone())
+            inc_id = inc["incident_id"]
+
+        # Check before action
+        r1 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r1.get_json()["mitigated_techniques"], 0)
+        self.assertEqual(r1.get_json()["resilience_index"], 0.0)
+
+        # Queue, approve, execute, verify
+        r_b = self.client.post("/api/soc/mitigate/block", headers=analyst_h, json={"target_ip": target_ip, "incident_id": inc_id})
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
+        self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
+        self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+        })
+
+        # Immediate GET /api/soc/mitre-matrix reflects the change immediately
+        r2 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
+        self.assertEqual(r2.get_json()["mitigated_techniques"], 1)
+        self.assertEqual(r2.get_json()["resilience_index"], 100.0)
+        tech = next(t for t in r2.get_json()["matrix"] if t["signature"] == "DIR_FUZZ")
+        self.assertEqual(tech["state"], "MITIGATED")
+
+    def test_11_countdown_behavior_for_valid_invalid_missing_and_expired(self):
+        """Scenario 11: Countdown behavior handles valid, invalid, missing, and expired timestamps."""
+        # 11a: Valid future action
+        future_act = {
+            "action_id": 101, "status": "VERIFIED", "timeout_seconds": 1800,
+            "executed_at": "2099-01-01T00:00:00Z"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(future_act)
+        self.assertFalse(is_exp)
+        self.assertGreater(rem, 0)
+        self.assertTrue(exp_iso.endswith("Z"))
+
+        # 11b: Expired action
+        past_act = {
+            "action_id": 102, "status": "VERIFIED", "timeout_seconds": 60,
+            "executed_at": "2020-01-01T00:00:00Z"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(past_act)
+        self.assertTrue(is_exp)
+        self.assertEqual(rem, 0)
+
+        # 11c: Missing executed_at (e.g. pending execution or verification)
+        missing_act = {
+            "action_id": 103, "status": "VERIFICATION_PENDING", "timeout_seconds": 1800,
+            "executed_at": None, "created_at": "2026-10-22T00:00:00Z"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(missing_act)
+        self.assertFalse(is_exp)
+        self.assertEqual(rem, 1800)
+
+        # 11d: Invalid format executed_at with valid timeout
+        invalid_act = {
+            "action_id": 104, "status": "VERIFIED", "timeout_seconds": 600,
+            "executed_at": "not-a-timestamp"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(invalid_act)
+        self.assertFalse(is_exp)
+        self.assertGreater(rem, 0)
+        self.assertIsNotNone(exp_iso)
+
+        # 11e: Invalid timeout_seconds
+        corrupt_act = {
+            "action_id": 105, "status": "VERIFIED", "timeout_seconds": "not-a-number",
+            "executed_at": "2026-10-22T00:00:00Z"
+        }
+        is_exp, rem, exp_iso = soc_backend.compute_action_expiry(corrupt_act)
+        self.assertFalse(is_exp)
+        self.assertIsNone(rem)
+        self.assertIsNone(exp_iso)
+
+    def test_12_database_migration_preserves_records(self):
+        """Scenario 12: Database migration preserves existing incident and response-action records."""
+        # Insert known incident and response action
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO incidents (incident_id, title, status, severity, source_ip, signature, defense_status, created_at, updated_at)
+                VALUES (999, 'Test Migration Preservation', 'TRIAGE', 'high', '198.51.100.99', 'PORT_SCAN', 'Detected', '2026-10-22T00:00:00Z', '2026-10-22T00:00:00Z')
+            """)
+            c.execute("""
+                INSERT INTO response_actions (action_id, incident_id, target_ip, action_type, status, triggered_by, timeout_seconds, created_at)
+                VALUES (999, 999, '198.51.100.99', 'BLOCK_IP', 'PENDING', 'SOC_ANALYST', 1800, '2026-10-22T00:00:00Z')
+            """)
+
+        # Re-run init_db migration
+        soc_backend.init_db(self.test_db_path)
+
+        # Verify records are preserved
+        with db(self.test_db_path) as c:
+            inc = dict(c.execute("SELECT * FROM incidents WHERE incident_id = 999").fetchone())
+            act = dict(c.execute("SELECT * FROM response_actions WHERE action_id = 999").fetchone())
+
+        self.assertEqual(inc["title"], "Test Migration Preservation")
+        self.assertEqual(inc["status"], "TRIAGE")
+        self.assertEqual(act["target_ip"], "198.51.100.99")
+        self.assertEqual(act["status"], "PENDING")
+
+    def test_13_unauthorized_users_cannot_approve_or_verify(self):
+        """Scenario 13: Unauthorized users cannot approve or verify response actions."""
+        # 1. No token provided -> 401 Unauthorized
+        r_unauth_app = self.client.post("/api/soc/response-actions/1/approve")
+        self.assertEqual(r_unauth_app.status_code, 401)
+
+        r_unauth_ver = self.client.post("/api/soc/response-actions/1/verify", json={"evidence": "test"})
+        self.assertEqual(r_unauth_ver.status_code, 401)
+
+        r_unauth_status = self.client.post("/api/soc/incidents/1/status", json={"status": "CLOSED"})
+        self.assertEqual(r_unauth_status.status_code, 401)
+
+        # 2. Agent token (valid agent token, but not analyst token) -> 401 Unauthorized
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        r_agent_app = self.client.post("/api/soc/response-actions/1/approve", headers=agent_h)
+        self.assertEqual(r_agent_app.status_code, 401)
+
+        r_agent_ver = self.client.post("/api/soc/response-actions/1/verify", headers=agent_h, json={"evidence": "test"})
+        self.assertEqual(r_agent_ver.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()
 

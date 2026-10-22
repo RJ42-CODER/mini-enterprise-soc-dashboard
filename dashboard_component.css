@@ -70,8 +70,24 @@
     border-left-color: #d97706
 }
 
+.state-cyan {
+    border-left-color: #06b6d4
+}
+
+.state-purple {
+    border-left-color: #8b5cf6
+}
+
 .state-green {
     border-left-color: #16a34a
+}
+
+.state-red {
+    border-left-color: #ef4444
+}
+
+.state-slate {
+    border-left-color: #64748b
 }
 
 .state-pill {

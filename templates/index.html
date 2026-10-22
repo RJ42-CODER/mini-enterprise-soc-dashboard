@@ -192,6 +192,14 @@
             </div>
             <div class="kpi-card">
               <div class="kpi-header">
+                <span class="kpi-label">ACTIVE TEMPORARY CONTROLS</span>
+                <span class="kpi-icon-pill">⏱️</span>
+              </div>
+              <div id="stat-temp-controls" class="kpi-value mono-text">0</div>
+              <div class="kpi-subtext">Active containment with expiry</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-header">
                 <span class="kpi-label">MONITORED TECHNIQUES</span>
                 <span class="kpi-icon-pill">📊</span>
               </div>
@@ -230,6 +238,23 @@
 
           <!-- MITRE ATT&CK Matrix Component Section -->
           {% include "dashboard_component.html" %}
+
+          <!-- Active Temporary Controls & Expiry Monitor -->
+          <div class="dash-card active-controls-banner-card" style="margin-bottom: 22px;">
+            <div class="dash-card-header">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.2rem;">⏱️</span>
+                <div>
+                  <h3 class="dash-card-title" style="margin:0;">Active Temporary Controls &amp; Expiry Monitor</h3>
+                  <p class="muted text-xs" style="margin:2px 0 0;">Host containment blocks with automatic timeouts. Automatically transitions to EXPIRED when timer lapses.</p>
+                </div>
+              </div>
+              <span id="dash-temp-controls-badge" class="badge badge-cyan">0 Active Controls</span>
+            </div>
+            <div id="dash-temp-controls-container" class="temp-controls-grid">
+              <p class="muted p-empty">No active temporary containment controls running.</p>
+            </div>
+          </div>
 
           <!-- Dashboard Recent Activity Section -->
           <div class="dash-activity-split">
@@ -410,7 +435,15 @@
           </div>
           <!-- MITRE Grid re-rendered here dynamically -->
           <div id="mitre-full-container">
-            <div class="mitre-legend"><span>● Untested</span><span>● Detected</span><span>● Mitigated</span></div>
+            <div class="mitre-legend">
+              <span class="legend-item"><span class="legend-dot dot-gray"></span> Untested</span>
+              <span class="legend-item"><span class="legend-dot dot-amber"></span> Detected</span>
+              <span class="legend-item"><span class="legend-dot dot-cyan"></span> Mitigation Applied</span>
+              <span class="legend-item"><span class="legend-dot dot-purple"></span> Verification Pending</span>
+              <span class="legend-item"><span class="legend-dot dot-green"></span> Verified</span>
+              <span class="legend-item"><span class="legend-dot dot-red"></span> Verification Failed</span>
+              <span class="legend-item"><span class="legend-dot dot-slate"></span> Expired</span>
+            </div>
             <div id="mitre-grid-full" class="mitre-grid">Loading MITRE ATT&amp;CK matrix...</div>
           </div>
         </section>
@@ -422,7 +455,7 @@
           <div class="page-header-bar">
             <div>
               <h2 id="actions-heading" class="page-title">SOAR CONTAINMENT &amp; RESPONSE ACTIONS</h2>
-              <p class="page-subtitle">Dry-run host containment queue, analyst approval workflows, and nftables verification records.</p>
+              <p class="page-subtitle">Dry-run host containment queue, analyst approval workflows, verification evidence, and temporary control expiry.</p>
             </div>
             <span class="badge badge-amber">SOAR: DRY-RUN</span>
           </div>
@@ -430,7 +463,21 @@
           <div class="containment-safety-notice">
             <div class="safety-icon" aria-hidden="true">⚠️</div>
             <div class="safety-text">
-              <strong>Containment Safety Notice:</strong> Containment requests enter <code>PENDING</code> status and require explicit analyst approval. Host mitigation is marked <strong>VERIFIED</strong> only after host firewall confirmation.
+              <strong>Containment Safety Notice:</strong> Containment requests enter <code>PENDING</code> status and require explicit analyst approval. Host mitigation is marked <strong>VERIFIED</strong> only after authentic host firewall confirmation. Closed incidents without verified proof are never marked verified.
+            </div>
+          </div>
+
+          <!-- Active Temporary Controls Live Section -->
+          <div class="dash-card" style="margin-bottom: 22px;">
+            <div class="dash-card-header">
+              <div>
+                <h3 class="dash-card-title">ACTIVE TEMPORARY CONTROLS</h3>
+                <p class="muted text-xs">Temporary containment blocks actively counting down to automatic expiration.</p>
+              </div>
+              <span id="actions-temp-controls-badge" class="badge badge-cyan">0 Active</span>
+            </div>
+            <div id="actions-temp-controls-container" class="temp-controls-grid">
+              <p class="muted p-empty">No active temporary containment controls.</p>
             </div>
           </div>
 
@@ -442,15 +489,16 @@
                   <th>Incident</th>
                   <th>Target IP</th>
                   <th>Action Type</th>
-                  <th>Status</th>
+                  <th>Defense Status</th>
+                  <th>Timeout / Expiry</th>
+                  <th>Verification Evidence</th>
                   <th>Triggered By</th>
-                  <th>Created (UTC)</th>
                   <th>Executed (UTC)</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="all-actions-body">
-                <tr><td colspan="9" class="text-center muted">Loading response actions...</td></tr>
+                <tr><td colspan="10" class="text-center muted">Loading response actions...</td></tr>
               </tbody>
             </table>
           </div>
@@ -769,6 +817,33 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="modal-btn-clear-token">Clear</button>
         <button type="button" class="btn btn-primary" id="modal-btn-save-token">Set Token</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Modal: Verify Mitigation Evidence Dialog -->
+  <div id="modal-verify-evidence" class="soc-modal-backdrop" hidden>
+    <div class="soc-modal-box" style="max-width: 620px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-verify-title">Verify Containment Mitigation</h3>
+        <button type="button" class="modal-close-btn" id="modal-close-verify">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-sm muted">Provide or confirm independent host firewall verification evidence (e.g. <code>nft list set inet filter blocked_ips</code> output or validator proof) for Action #<span id="modal-verify-act-id"></span> on target <strong id="modal-verify-target-ip"></strong>.</p>
+        
+        <div style="margin-top: 14px;">
+          <label class="form-label" for="modal-verify-input">Verification Evidence / Command Proof <span class="required">*</span></label>
+          <textarea id="modal-verify-input" class="form-textarea mono-text" rows="5" placeholder="Paste nftables rule proof or JSON evidence:&#10;table inet filter {&#10;    set blocked_ips {&#10;        type ipv4_addr&#10;        elements = { 198.51.100.25 }&#10;    }&#10;}"></textarea>
+        </div>
+
+        <div class="verification-helper-chips" style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn btn-outline btn-xs" id="btn-helper-nft-proof">Insert Valid nftables Proof</button>
+          <button type="button" class="btn btn-outline btn-xs" id="btn-helper-dryrun-reject">Insert Dry-Run Note (Will Fail Verification)</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="modal-btn-cancel-verify">Cancel</button>
+        <button type="button" class="btn btn-primary" id="modal-btn-confirm-verify">Confirm &amp; Verify</button>
       </div>
     </div>
   </div>

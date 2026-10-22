@@ -10,7 +10,15 @@
       <strong id="resilience-value">—</strong><small id="resilience-detail">Waiting for data</small>
     </div>
   </header>
-  <div class="mitre-legend"><span>● Untested</span><span>● Detected</span><span>● Mitigated</span></div>
+  <div class="mitre-legend">
+    <span class="legend-item"><span class="legend-dot dot-gray"></span> Untested</span>
+    <span class="legend-item"><span class="legend-dot dot-amber"></span> Detected</span>
+    <span class="legend-item"><span class="legend-dot dot-cyan"></span> Mitigation Applied</span>
+    <span class="legend-item"><span class="legend-dot dot-purple"></span> Verification Pending</span>
+    <span class="legend-item"><span class="legend-dot dot-green"></span> Verified</span>
+    <span class="legend-item"><span class="legend-dot dot-red"></span> Verification Failed</span>
+    <span class="legend-item"><span class="legend-dot dot-slate"></span> Expired</span>
+  </div>
   <div id="mitre-grid" class="mitre-grid" aria-live="polite">Loading…</div>
   <p id="mitre-error" class="error" role="alert" hidden></p>
 </section>
