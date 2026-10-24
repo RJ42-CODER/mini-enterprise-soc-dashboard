@@ -2717,3 +2717,23 @@ a:hover {
     color: #333333 !important;
   }
 }
+
+/* ==========================================================================
+   Refresh Spin Animation & Loading States
+   ========================================================================== */
+@keyframes soc-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.btn.refreshing svg,
+.btn.refreshing i {
+  animation: soc-spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+.btn.refreshing {
+  opacity: 0.75;
+  cursor: wait !important;
+  pointer-events: none;
+}

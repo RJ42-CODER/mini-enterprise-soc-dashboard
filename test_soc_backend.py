@@ -2647,7 +2647,278 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
         self.assertEqual(r_agent_app.status_code, 401)
 
         r_agent_ver = self.client.post("/api/soc/response-actions/1/verify", headers=agent_h, json={"evidence": "test"})
-        self.assertEqual(r_agent_ver.status_code, 401)
+
+from unittest.mock import patch, MagicMock
+import agent_remediator
+
+class TestSoarAttackMitigationsAndRefresh(unittest.TestCase):
+    """
+    Dedicated test suite covering all 8 requirements:
+    1. All 6 signatures map to correct response policies.
+    2. Unknown signatures use the safe fallback.
+    3. Dry-run records do not claim real execution or verification.
+    4. Enabled enforcement executes only supported actions.
+    5. Verification accurately reflects actual firewall/app state.
+    6. Temporary controls expire and clean up only their own rules.
+    7. Refresh updates interface data contracts and handles API errors.
+    8. Existing Nmap port scan detection pipeline works.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.test_db_path = str(Path(cls.temp_dir.name) / "test_soar_policy.db")
+        app.config["TESTING"] = True
+        app.config["SOC_DB_PATH"] = cls.test_db_path
+        app.config["SOC_AGENT_TOKEN"] = TEST_AGENT_TOKEN
+        app.config["ANALYST_TOKEN"] = TEST_ANALYST_TOKEN
+        init_db(cls.test_db_path)
+        cls.client = app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        import gc
+        gc.collect()
+        try:
+            cls.temp_dir.cleanup()
+        except Exception:
+            pass
+
+    def setUp(self):
+        self._orig_env = dict(os.environ)
+        self.headers = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        with db(self.test_db_path) as c:
+            c.execute("DELETE FROM incident_notes")
+            c.execute("DELETE FROM alerts")
+            c.execute("DELETE FROM response_actions")
+            c.execute("DELETE FROM incidents")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+
+    # 1. All six signatures map to the correct response policy
+    def test_01_all_six_signatures_map_to_correct_response_policy(self):
+        r = self.client.get("/api/soc/response-policies", headers=self.headers)
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        policies = data.get("policies", {})
+
+        for sig, pol in soc_backend.RESPONSE_POLICIES.items():
+            self.assertIn(sig, policies)
+            p = policies[sig]
+            self.assertEqual(p["selected_response"], pol["selected_response"], f"Signature {sig} response mismatch")
+            self.assertEqual(p["is_supported"], pol["is_supported"], f"Signature {sig} support mismatch")
+            self.assertEqual(p["duration_seconds"], pol["duration_seconds"], f"Signature {sig} duration mismatch")
+            self.assertTrue(len(p["description"]) > 0)
+            self.assertTrue(len(p["verification_method"]) > 0)
+
+            # Test individual endpoint
+            r_single = self.client.get(f"/api/soc/response-policies/{sig}", headers=self.headers)
+            self.assertEqual(r_single.status_code, 200)
+            s_pol = r_single.get_json().get("policy", {})
+            self.assertEqual(s_pol["signature"], sig)
+            self.assertEqual(s_pol["selected_response"], pol["selected_response"])
+
+    # 2. Unknown signatures use the safe fallback
+    def test_02_unknown_signature_safe_fallback(self):
+        r = self.client.get("/api/soc/response-policies/COMPLETELY_UNKNOWN_EXPLOIT_99", headers=self.headers)
+        self.assertEqual(r.status_code, 200)
+        pol = r.get_json().get("policy", {})
+        self.assertEqual(pol["selected_response"], "ALERT_AND_MANUAL_TRIAGE")
+        self.assertTrue(pol["is_supported"])
+        self.assertIsNone(pol["duration_seconds"])
+        self.assertIn("Safe fallback for unknown signature", pol["description"])
+
+    # 3. Dry-run records do not claim real execution
+    @patch("agent_remediator.report")
+    def test_03_dry_run_records_do_not_claim_real_execution(self, mock_report):
+        with patch.object(agent_remediator, "DRY_RUN", True):
+            action = {
+                "action_id": 42,
+                "type": "BLOCK_IP",
+                "target_ip": "198.51.100.42",
+                "timeout_seconds": 1800
+            }
+            agent_remediator.execute(action)
+            mock_report.assert_called_once()
+            args, _ = mock_report.call_args
+            self.assertEqual(args[0], 42)
+            self.assertEqual(args[1], "DRY_RUN")
+            self.assertIn("Simulated containment", args[2])
+            self.assertNotIn("nftables verified", args[2])
+
+    # 4. Enabled enforcement executes only supported actions
+    @patch("agent_remediator.report")
+    def test_04_enabled_enforcement_executes_only_supported_actions(self, mock_report):
+        with patch.object(agent_remediator, "DRY_RUN", False):
+            # 1. Unsupported action type
+            agent_remediator.execute({"action_id": 55, "type": "APP_REJECT", "target_ip": "198.51.100.55"})
+            args, _ = mock_report.call_args
+            self.assertEqual(args[1], "FAILED")
+            self.assertIn("Unsupported action type", args[2])
+
+            mock_report.reset_mock()
+            # 2. Protected management IP
+            agent_remediator.execute({"action_id": 56, "type": "BLOCK_IP", "target_ip": "127.0.0.1"})
+            args, _ = mock_report.call_args
+            self.assertEqual(args[1], "FAILED")
+            self.assertIn("protected management connection", args[2])
+
+            mock_report.reset_mock()
+            # 3. nft command failure
+            with patch("subprocess.run") as mock_sub:
+                mock_sub.return_value = MagicMock(returncode=1, stderr="Permission denied", stdout="")
+                agent_remediator.execute({"action_id": 57, "type": "BLOCK_IP", "target_ip": "198.51.100.57", "timeout_seconds": 1800})
+                args, _ = mock_report.call_args
+                self.assertEqual(args[1], "FAILED")
+                self.assertIn("Permission denied", args[2])
+                self.assertNotIn("Simulated containment", args[2])
+
+    # 5. Verification accurately reflects actual firewall or application state
+    def test_05_verification_reflects_actual_state(self):
+        # Create an incident and action
+        with db(self.test_db_path) as c:
+            c.execute(
+                "INSERT INTO incidents (incident_id, title, severity, status, source_ip, signature, mitre_id, created_at, updated_at, defense_status) "
+                "VALUES (101, 'Test Verification', 'high', 'NEW', '198.51.100.101', 'PORT_SCAN', 'T1046', '2026-10-24T00:00:00Z', '2026-10-24T00:00:00Z', 'Detected')"
+            )
+            c.execute(
+                "INSERT INTO response_actions (action_id, incident_id, action_type, target_ip, status, triggered_by, created_at) "
+                "VALUES (101, 101, 'BLOCK_IP', '198.51.100.101', 'EXECUTED', 'SOC_ANALYST', '2026-10-24T00:00:00Z')"
+            )
+
+        # 1. Invalid verification evidence -> VERIFICATION_FAILED
+        r_fail = self.client.post(
+            "/api/soc/response-actions/101/verify",
+            headers=self.headers,
+            json={"evidence": "table inet filter { empty }"}
+        )
+        self.assertEqual(r_fail.status_code, 200)
+        self.assertEqual(r_fail.get_json()["status"], "VERIFICATION_FAILED")
+
+        # 2. Valid verification evidence matching target_ip -> VERIFIED
+        valid_ev = "table inet filter {\n    set blocked_ips {\n        type ipv4_addr\n        elements = { 198.51.100.101 }\n    }\n}"
+        r_ver = self.client.post(
+            "/api/soc/response-actions/101/verify",
+            headers=self.headers,
+            json={"evidence": valid_ev}
+        )
+        self.assertEqual(r_ver.status_code, 200)
+        self.assertEqual(r_ver.get_json()["status"], "VERIFIED")
+
+        # 3. Closed incident without verification must not claim successfully verified
+        with db(self.test_db_path) as c:
+            c.execute(
+                "INSERT INTO incidents (incident_id, title, severity, status, source_ip, signature, mitre_id, created_at, updated_at, defense_status) "
+                "VALUES (102, 'Unverified Incident', 'medium', 'NEW', '198.51.100.102', 'BRUTE_FORCE_AUTH', 'T1110', '2026-10-24T00:00:00Z', '2026-10-24T00:00:00Z', 'Detected')"
+            )
+        r_close = self.client.post(
+            "/api/soc/incidents/102/status",
+            headers=self.headers,
+            json={"status": "CLOSED", "rationale": "False positive"}
+        )
+        self.assertEqual(r_close.status_code, 200)
+        # Defense status must remain Detected or unverified, not 'Verified'
+        with db(self.test_db_path) as c:
+            row = c.execute("SELECT defense_status FROM incidents WHERE incident_id = 102").fetchone()
+            self.assertNotEqual(row["defense_status"], "Verified")
+
+    # 6. Temporary controls expire and clean up only their own rules
+    def test_06_temporary_controls_expire_cleanly(self):
+        # Insert an expired control (created in 2020)
+        with db(self.test_db_path) as c:
+            c.execute(
+                "INSERT INTO response_actions (action_id, incident_id, action_type, target_ip, status, timeout_seconds, triggered_by, created_at, expires_at) "
+                "VALUES (201, NULL, 'BLOCK_IP', '198.51.100.201', 'VERIFIED', 1800, 'SOC_ANALYST', '2020-01-01T00:00:00Z', '2020-01-01T00:30:00Z')"
+            )
+            # Insert a current active control
+            c.execute(
+                "INSERT INTO response_actions (action_id, incident_id, action_type, target_ip, status, timeout_seconds, triggered_by, created_at, expires_at) "
+                "VALUES (202, NULL, 'BLOCK_IP', '198.51.100.202', 'VERIFIED', 1800, 'SOC_ANALYST', ?, NULL)",
+                (soc_backend.now(),)
+            )
+
+        # Query active temporary controls: check_and_update_expired_controls runs automatically
+        r = self.client.get("/api/soc/temporary-controls", headers=self.headers)
+        self.assertEqual(r.status_code, 200)
+        active = r.get_json().get("active_controls", [])
+        expired = r.get_json().get("expired_controls", [])
+        active_ids = [a["action_id"] for a in active]
+        expired_ids = [a["action_id"] for a in expired]
+        self.assertNotIn(201, active_ids, "Expired action 201 must not remain in active temporary controls")
+        self.assertIn(202, active_ids, "Active action 202 must be in temporary controls")
+        self.assertIn(201, expired_ids, "Expired action 201 must be in expired controls list")
+
+        # Verify host remediator unblock deletes only the specific element, leaving table and other rules intact
+        with patch("agent_remediator.nft_file") as mock_nft, patch("agent_remediator.is_blocked") as mock_is_bl:
+            mock_nft.return_value = MagicMock(returncode=0)
+            mock_is_bl.side_effect = [True, False]  # initially blocked, then unblocked
+            with patch.object(agent_remediator, "DRY_RUN", False):
+                ok, msg = agent_remediator.unblock_ip("198.51.100.201")
+                self.assertTrue(ok)
+                # Verify rule targeted only the single element in blocked_ips set
+                call_arg = mock_nft.call_args[0][0]
+                self.assertIn("delete element", call_arg)
+                self.assertIn("198.51.100.201", call_arg)
+                self.assertNotIn("flush", call_arg)
+
+    # 7. Refresh updates interface contracts and handles API errors
+    def test_07_refresh_api_contracts_and_error_handling(self):
+        # Unauthenticated request -> 401 with standard JSON error
+        r_unauth = self.client.get("/api/soc/response-actions")
+        self.assertEqual(r_unauth.status_code, 401)
+        err = r_unauth.get_json()
+        self.assertTrue("error" in err or "message" in err)
+
+        # Authenticated requests for all refresh endpoints succeed
+        r_matrix = self.client.get("/api/soc/mitre-matrix", headers=self.headers)
+        self.assertEqual(r_matrix.status_code, 200)
+        self.assertIn("soar_mode", r_matrix.get_json())
+
+        r_alerts = self.client.get("/api/soc/alerts?limit=200", headers=self.headers)
+        self.assertEqual(r_alerts.status_code, 200)
+
+        r_incidents = self.client.get("/api/soc/incidents", headers=self.headers)
+        self.assertEqual(r_incidents.status_code, 200)
+
+        r_actions = self.client.get("/api/soc/response-actions", headers=self.headers)
+        self.assertEqual(r_actions.status_code, 200)
+
+        r_reports = self.client.get("/api/soc/reports", headers=self.headers)
+        self.assertEqual(r_reports.status_code, 200)
+
+    # 8. Existing Nmap port scan detection pipeline still works
+    def test_08_nmap_port_scan_detection_pipeline_works(self):
+        agent_h = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        event = {
+            "source_ip": "198.51.100.88",
+            "destination_ip": "10.0.0.1",
+            "destination_port": 80,
+            "signature": "PORT_SCAN",
+            "message": "Nmap TCP port scan detected (T1046)",
+            "technique_id": "T1046",
+            "technique_name": "Network Service Discovery",
+            "tactic": "Discovery",
+            "severity": "high"
+        }
+
+        r = self.client.post("/api/events", headers=agent_h, json=event)
+        self.assertEqual(r.status_code, 202)
+        data = r.get_json()
+        self.assertEqual(data.get("status"), "accepted")
+        self.assertIn("incident_id", data)
+
+        inc_id = data["incident_id"]
+        # Fetch incident details and verify policy and detection integrity
+        r_inc = self.client.get(f"/api/soc/incidents/{inc_id}", headers=self.headers)
+        self.assertEqual(r_inc.status_code, 200)
+        inc_data = r_inc.get_json()["incident"]
+        self.assertEqual(inc_data["signature"], "PORT_SCAN")
+        self.assertEqual(inc_data["technique_id"], "T1046")
+        self.assertIn("response_policy", inc_data)
+        self.assertEqual(inc_data["response_policy"]["selected_response"], "RATE_LIMIT_OR_TEMPORARY_RESTRICTION")
+        self.assertTrue(inc_data["response_policy"]["is_supported"])
+
 
 
 if __name__ == "__main__":

@@ -100,6 +100,35 @@ def get_dir_fuzz_window() -> int:
         pass
     return 60
 
+def is_soar_dry_run() -> bool:
+    """
+    Check if SOAR operates in dry-run simulation mode (safe default: True).
+    Real enforcement is only active when explicitly configured via SOAR_ENFORCEMENT_MODE=true
+    or SOAR_DRY_RUN=false.
+    """
+    # 1. Check explicit enforcement mode configuration
+    if "SOAR_ENFORCEMENT_MODE" in app.config and app.config["SOAR_ENFORCEMENT_MODE"] is not None:
+        val = str(app.config["SOAR_ENFORCEMENT_MODE"]).lower().strip()
+        if val in ("true", "1", "enabled", "enforce", "enforcing"):
+            return False
+        if val in ("false", "0", "disabled"):
+            return True
+    enforce_env = os.getenv("SOAR_ENFORCEMENT_MODE", "").lower().strip()
+    if enforce_env in ("true", "1", "enabled", "enforce", "enforcing"):
+        return False
+
+    # 2. Check SOAR_DRY_RUN configuration (safe default: True)
+    if "SOAR_DRY_RUN" in app.config and app.config["SOAR_DRY_RUN"] is not None:
+        val = str(app.config["SOAR_DRY_RUN"]).lower().strip()
+        return val not in ("false", "0", "disabled", "no")
+
+    val = os.getenv("SOAR_DRY_RUN", "true").lower().strip()
+    return val not in ("false", "0", "disabled", "no")
+
+def get_soar_mode() -> str:
+    """Return 'DRY-RUN' or 'ENFORCEMENT'."""
+    return "DRY-RUN" if is_soar_dry_run() else "ENFORCEMENT"
+
 # ---------------------------------------------------------------------------
 # Directory Discovery (DIR_FUZZ) Classification & Tracking Engine
 # ---------------------------------------------------------------------------
@@ -323,6 +352,8 @@ def validate_startup_config():
         "agent_token_len": len(agent_tok),
         "analyst_auth_configured": bool(analyst_tok),
         "analyst_token_len": len(analyst_tok),
+        "soar_dry_run": is_soar_dry_run(),
+        "soar_mode": get_soar_mode(),
     }
 
 # 6 Core MITRE ATT&CK Mappings
@@ -334,6 +365,146 @@ REGISTRY = {
  "BRUTE_FORCE_AUTH": ("T1110", "Brute Force", "Credential Access"),
  "COMMAND_INJECTION": ("T1059", "Command and Scripting Interpreter", "Execution"),
 }
+
+# ---------------------------------------------------------------------------
+# Attack-Specific Response Policies
+# ---------------------------------------------------------------------------
+RESPONSE_POLICIES: Dict[str, Dict[str, Any]] = {
+    "PORT_SCAN": {
+        "signature": "PORT_SCAN",
+        "technique_id": "T1046",
+        "technique_name": "Network Service Discovery",
+        "tactic": "Reconnaissance",
+        "policy_name": "Port Scan Rate-Limiting & Temporary Restriction Policy",
+        "trigger_conditions": "Confirmed network port scan telemetry with multiple probed destination ports",
+        "selected_response": "RATE_LIMIT_OR_TEMPORARY_RESTRICTION",
+        "action_type": "BLOCK_IP",
+        "scope": "network_layer",
+        "duration_seconds": 1800,
+        "verification_method": "host_nftables_query",
+        "is_supported": True,
+        "description": "Rate-limit or temporarily restrict confirmed scanner source IP in host firewall table inet mini_enterprise set blocked_ips.",
+        "pending_reason": None,
+    },
+    "DIR_FUZZ": {
+        "signature": "DIR_FUZZ",
+        "technique_id": "T1083",
+        "technique_name": "File and Directory Discovery",
+        "tactic": "Discovery",
+        "policy_name": "Directory Discovery Enumeration Throttling & Restriction Policy",
+        "trigger_conditions": "Repeated distinct 404 path probes exceeding threshold within window, or explicit sensitive backup/environment target probing",
+        "selected_response": "ENUMERATION_THROTTLING_AND_TEMPORARY_RESTRICTION",
+        "action_type": "BLOCK_IP",
+        "scope": "application_and_network_layer",
+        "duration_seconds": 900,
+        "verification_method": "host_nftables_query",
+        "is_supported": True,
+        "description": "Apply enumeration throttling via probe tracker; apply temporary firewall restriction for sustained abusive probing.",
+        "pending_reason": None,
+    },
+    "PATH_TRAVERSAL": {
+        "signature": "PATH_TRAVERSAL",
+        "technique_id": "T1083",
+        "technique_name": "File and Directory Discovery",
+        "tactic": "Discovery",
+        "policy_name": "Path Traversal Request Rejection & File Audit Policy",
+        "trigger_conditions": "Directory traversal probe sequence (e.g. '../', '%2e%2e%2f') detected in request path",
+        "selected_response": "REJECT_REQUEST_AND_INVESTIGATE",
+        "action_type": "APP_REJECT",
+        "scope": "application_layer",
+        "duration_seconds": None,
+        "verification_method": "http_status_rejection_audit",
+        "is_supported": False,
+        "description": "Reject malicious requests (HTTP 400/403) at web application tier and investigate attempted file access. Firewall IP block is not primary mitigation.",
+        "pending_reason": "Application-layer path sanitizer / web tier reverse proxy filter pending deployment. Firewall block is not the primary mitigation.",
+    },
+    "SQL_INJECTION": {
+        "signature": "SQL_INJECTION",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+        "policy_name": "SQL Injection Application-Layer Protection Policy",
+        "trigger_conditions": "SQL injection syntax, boolean tautologies, or union probes detected in query parameters or payload",
+        "selected_response": "APPLICATION_LAYER_PROTECTION",
+        "action_type": "APP_REJECT",
+        "scope": "application_database_layer",
+        "duration_seconds": None,
+        "verification_method": "waf_query_audit",
+        "is_supported": False,
+        "description": "Reject malicious requests and use application-layer protection (parameterized queries, input validation); firewall block does not prevent SQL injection.",
+        "pending_reason": "Application-layer parameterized query enforcement and WAF inspection pending deployment. Host firewall block does not mitigate SQL injection.",
+    },
+    "BRUTE_FORCE_AUTH": {
+        "signature": "BRUTE_FORCE_AUTH",
+        "technique_id": "T1110",
+        "technique_name": "Brute Force",
+        "tactic": "Credential Access",
+        "policy_name": "Authentication Throttling & Progressive Delay Policy",
+        "trigger_conditions": "Consecutive failed login attempts exceeding threshold from source IP or against targeted account",
+        "selected_response": "AUTH_THROTTLING_AND_ACCOUNT_LOCKOUT",
+        "action_type": "AUTH_THROTTLE",
+        "scope": "identity_authentication_layer",
+        "duration_seconds": 600,
+        "verification_method": "auth_audit_log",
+        "is_supported": False,
+        "description": "Apply authentication throttling, progressive delays (exponential backoff), and appropriate account-aware controls. Avoid automatic permanent blocking.",
+        "pending_reason": "Authentication service progressive backoff, CAPTCHA challenge, and account-aware lockout instrumentation pending deployment.",
+    },
+    "COMMAND_INJECTION": {
+        "signature": "COMMAND_INJECTION",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+        "policy_name": "Command Injection Request Rejection & Process Audit Policy",
+        "trigger_conditions": "Shell metacharacters, pipe operators, or command execution sequences detected in input parameters",
+        "selected_response": "REJECT_REQUEST_AND_AUDIT_EXECUTION",
+        "action_type": "APP_REJECT",
+        "scope": "application_and_os_layer",
+        "duration_seconds": None,
+        "verification_method": "process_audit_inspection",
+        "is_supported": False,
+        "description": "Reject the request at application layer and investigate possible command execution across host process tree.",
+        "pending_reason": "Host process execution auditing and application input sanitizer pending deployment. Firewall blocking is insufficient.",
+    },
+}
+
+SAFE_FALLBACK_POLICY: Dict[str, Any] = {
+    "signature": "UNKNOWN",
+    "technique_id": "T1000",
+    "technique_name": "Unclassified Technique",
+    "tactic": "Triage",
+    "policy_name": "Safe Fallback Triage Policy",
+    "trigger_conditions": "Unrecognized or unmapped security event signature",
+    "selected_response": "ALERT_AND_MANUAL_TRIAGE",
+    "action_type": "LOG_MONITOR",
+    "scope": "soc_triage",
+    "duration_seconds": None,
+    "verification_method": "manual_analyst_review",
+    "is_supported": True,
+    "description": "Safe fallback for unknown signatures: record alert, notify analyst for manual review, and do not execute automatic permanent or host-level containment.",
+    "pending_reason": None,
+}
+
+def get_response_policy(signature: Optional[str]) -> Dict[str, Any]:
+    """
+    Return explicit response policy for an alert signature.
+    Normalizes signature and falls back safely for unknown signatures.
+    """
+    if not signature or not isinstance(signature, str):
+        fallback = dict(SAFE_FALLBACK_POLICY)
+        fallback["signature"] = "UNKNOWN"
+        return fallback
+
+    cleaned = signature.upper().strip()
+    canonical_sig = EVENT_NORMALIZATION.get(cleaned, cleaned)
+
+    if canonical_sig in RESPONSE_POLICIES:
+        return dict(RESPONSE_POLICIES[canonical_sig])
+
+    fallback = dict(SAFE_FALLBACK_POLICY)
+    fallback["signature"] = canonical_sig
+    fallback["description"] = f"Safe fallback for unknown signature '{signature}': alert recorded for analyst review; automatic containment avoided."
+    return fallback
 
 # Canonical normalization for website agent & detector event types
 EVENT_NORMALIZATION = {
@@ -710,8 +881,8 @@ def init_db(db_path=None):
 
         CREATE TABLE IF NOT EXISTS response_actions(
           action_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER,
-          target_ip TEXT NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('BLOCK_IP','UNBLOCK_IP')),
-          status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','EXECUTED','MITIGATION_APPLIED','VERIFICATION_PENDING','VERIFIED','VERIFICATION_FAILED','EXPIRED','FAILED','CANCELLED','DRY_RUN')),
+          target_ip TEXT NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('BLOCK_IP','UNBLOCK_IP','RATE_LIMIT','APP_REJECT','AUTH_THROTTLE','LOG_MONITOR')),
+          status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','EXECUTED','MITIGATION_APPLIED','VERIFICATION_PENDING','VERIFIED','VERIFICATION_FAILED','EXPIRED','FAILED','CANCELLED','DRY_RUN','UNSUPPORTED','PENDING_IMPLEMENTATION')),
           triggered_by TEXT NOT NULL CHECK(triggered_by IN ('AUTO_RULE','SOC_ANALYST')),
           created_at TEXT NOT NULL, executed_at TEXT, timeout_seconds INTEGER,
           message TEXT NOT NULL DEFAULT '',
@@ -794,17 +965,17 @@ def init_db(db_path=None):
             if col_name not in cols_actions:
                 c.execute(f"ALTER TABLE response_actions ADD COLUMN {col_name} {col_type}")
 
-        # Test if response_actions supports new status values
+        # Test if response_actions supports new status and action_type values
         try:
-            c.execute("INSERT INTO response_actions (target_ip, action_type, status, triggered_by, created_at) VALUES ('127.0.0.1', 'BLOCK_IP', 'EXPIRED', 'AUTO_RULE', '1970-01-01T00:00:00Z')")
+            c.execute("INSERT INTO response_actions (target_ip, action_type, status, triggered_by, created_at) VALUES ('127.0.0.1', 'BLOCK_IP', 'PENDING_IMPLEMENTATION', 'AUTO_RULE', '1970-01-01T00:00:00Z')")
             c.execute("DELETE FROM response_actions WHERE target_ip='127.0.0.1' AND created_at='1970-01-01T00:00:00Z'")
         except sqlite3.IntegrityError:
             c.execute("ALTER TABLE response_actions RENAME TO _response_actions_old")
             c.execute("""
             CREATE TABLE response_actions(
               action_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER,
-              target_ip TEXT NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('BLOCK_IP','UNBLOCK_IP')),
-              status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','EXECUTED','MITIGATION_APPLIED','VERIFICATION_PENDING','VERIFIED','VERIFICATION_FAILED','EXPIRED','FAILED','CANCELLED','DRY_RUN')),
+              target_ip TEXT NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('BLOCK_IP','UNBLOCK_IP','RATE_LIMIT','APP_REJECT','AUTH_THROTTLE','LOG_MONITOR')),
+              status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','EXECUTED','MITIGATION_APPLIED','VERIFICATION_PENDING','VERIFIED','VERIFICATION_FAILED','EXPIRED','FAILED','CANCELLED','DRY_RUN','UNSUPPORTED','PENDING_IMPLEMENTATION')),
               triggered_by TEXT NOT NULL CHECK(triggered_by IN ('AUTO_RULE','SOC_ANALYST')),
               created_at TEXT NOT NULL, executed_at TEXT, timeout_seconds INTEGER,
               message TEXT NOT NULL DEFAULT '',
@@ -911,28 +1082,70 @@ def auth(role):
         return inner
     return deco
 
+def is_management_ip(raw_ip: str) -> bool:
+    """Check if IPv4 address belongs to dashboard management listener, loopback, or protected set."""
+    try:
+        ip = ipaddress.ip_address(raw_ip)
+        if ip.is_loopback:
+            return True
+        bind_host = get_bind_host()
+        if bind_host and bind_host not in ("0.0.0.0", "::"):
+            try:
+                if ip == ipaddress.ip_address(bind_host):
+                    return True
+            except ValueError:
+                pass
+        prot = os.getenv("PROTECTED_IPS", "")
+        if prot:
+            for item in prot.split(","):
+                item = item.strip()
+                if item:
+                    try:
+                        if ip == ipaddress.ip_address(item) or ip in ipaddress.ip_network(item, strict=False):
+                            return True
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return False
+
 def valid_ip(raw):
     ip = ipaddress.ip_address(raw)
     if not isinstance(ip, ipaddress.IPv4Address) or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
         raise ValueError("Expected non-special IPv4 address")
     return str(ip)
 
-def enqueue(target, kind, actor, timeout=None, incident_id=None):
+def enqueue(target, kind, actor, timeout=None, incident_id=None, message=""):
     target = valid_ip(target)
-    if kind not in ("BLOCK_IP", "UNBLOCK_IP"): raise ValueError("Unsupported action")
+    if is_management_ip(target) and kind == "BLOCK_IP":
+        raise ValueError(f"Cannot block target IP '{target}': management connection is protected")
+    valid_kinds = ("BLOCK_IP", "UNBLOCK_IP", "RATE_LIMIT", "APP_REJECT", "AUTH_THROTTLE", "LOG_MONITOR")
+    if kind not in valid_kinds: raise ValueError("Unsupported action")
     if timeout is not None and not 1 <= int(timeout) <= 604800: raise ValueError("Timeout must be 1 second to 7 days")
     with db() as c:
         cur = c.execute("""INSERT INTO response_actions
-          (incident_id,target_ip,action_type,status,triggered_by,created_at,timeout_seconds)
-          VALUES(?,?,?,'PENDING',?,?,?)""", (incident_id,target,kind,actor,now(),timeout))
+          (incident_id,target_ip,action_type,status,triggered_by,created_at,timeout_seconds,message)
+          VALUES(?,?,?,'PENDING',?,?,?,?)""", (incident_id,target,kind,actor,now(),timeout,message))
         return cur.lastrowid
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    dry = is_soar_dry_run()
+    return render_template(
+        "index.html",
+        soar_dry_run=dry,
+        soar_mode="DRY-RUN" if dry else "ENFORCEMENT"
+    )
 
 @app.get("/api/health")
-def health(): return jsonify(status="ok", timestamp=now())
+def health():
+    dry = is_soar_dry_run()
+    return jsonify(
+        status="ok",
+        timestamp=now(),
+        soar_mode="DRY-RUN" if dry else "ENFORCEMENT",
+        soar_dry_run=dry
+    )
 
 @app.post("/api/events")
 @auth("agent")
@@ -1232,8 +1445,61 @@ def status():
 def block():
     d = request.get_json(silent=True) or {}
     inc_id = d.get("incident_id")
+    target_ip = d.get("target_ip")
+    if not target_ip:
+        return jsonify(error="Field 'target_ip' is required"), 400
+
+    # Determine signature from incident if available, or direct field
+    sig = d.get("signature")
+    if inc_id and not sig:
+        with db() as c:
+            row = c.execute("SELECT signature, source_ip FROM incidents WHERE incident_id = ?", (inc_id,)).fetchone()
+            if row:
+                sig = row["signature"]
+                if not target_ip:
+                    target_ip = row["source_ip"]
+
+    policy = get_response_policy(sig) if sig else None
+
+    # If apply_policy is explicitly requested and policy is not supported
+    if d.get("apply_policy") and policy and not policy["is_supported"]:
+        reason = policy.get("pending_reason") or f"Application instrumentation for {policy['signature']} pending deployment"
+        timeout_val = policy.get("duration_seconds")
+        try:
+            target_clean = valid_ip(target_ip)
+        except Exception as e:
+            return jsonify(error=str(e)), 400
+
+        with db() as c:
+            cur = c.execute("""
+                INSERT INTO response_actions
+                (incident_id, target_ip, action_type, status, triggered_by, created_at, timeout_seconds, message)
+                VALUES (?, ?, ?, 'PENDING_IMPLEMENTATION', 'SOC_ANALYST', ?, ?, ?)
+            """, (inc_id, target_clean, policy["action_type"], now(), timeout_val, reason))
+            aid = cur.lastrowid
+
+            if inc_id:
+                c.execute("""
+                    INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                    VALUES (?, 'SOC_ANALYST', ?, ?, 'CONTAINMENT_REQUEST')
+                """, (inc_id, now(), f"Response policy evaluated for {policy['signature']}: {policy['selected_response']}. Action #{aid} marked PENDING_IMPLEMENTATION ({reason})."))
+
+        return jsonify(
+            status="PENDING_IMPLEMENTATION",
+            action_id=aid,
+            incident_id=inc_id,
+            supported=False,
+            policy=policy,
+            message=reason
+        ), 200
+
+    # For supported network policies, use timeout from policy if not given
+    timeout_sec = d.get("timeout_seconds")
+    if timeout_sec is None and policy and policy.get("duration_seconds"):
+        timeout_sec = policy["duration_seconds"]
+
     try:
-        aid = enqueue(d["target_ip"], "BLOCK_IP", "SOC_ANALYST", d.get("timeout_seconds"), inc_id)
+        aid = enqueue(target_ip, "BLOCK_IP", "SOC_ANALYST", timeout_sec, inc_id, policy["policy_name"] if policy else "")
     except (KeyError, ValueError, TypeError) as e:
         return jsonify(error=str(e)), 400
 
@@ -1244,14 +1510,109 @@ def block():
                     UPDATE incidents SET status = 'CONTAINMENT_PENDING_APPROVAL', updated_at = ?
                     WHERE incident_id = ?
                 """, (now(), inc_id))
+                policy_note = f" (Policy: {policy['selected_response']})" if policy else ""
                 c.execute("""
                     INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                     VALUES (?, 'SOC_ANALYST', ?, ?, 'CONTAINMENT_REQUEST')
-                """, (inc_id, now(), f"Containment BLOCK_IP action #{aid} queued for target {d['target_ip']}. Status: PENDING_APPROVAL"))
+                """, (inc_id, now(), f"Containment BLOCK_IP action #{aid} queued for target {target_ip}{policy_note}. Status: PENDING_APPROVAL"))
         except Exception:
             pass
 
-    return jsonify(status="PENDING_APPROVAL", action_id=aid, incident_id=inc_id), 202
+    return jsonify(status="PENDING_APPROVAL", action_id=aid, incident_id=inc_id, policy=policy), 202
+
+@app.post("/api/soc/mitigate/apply-policy")
+@auth("analyst")
+def apply_policy_action():
+    d = request.get_json(silent=True) or {}
+    inc_id = d.get("incident_id")
+    target_ip = d.get("target_ip")
+    sig = d.get("signature")
+
+    if inc_id and not (target_ip and sig):
+        with db() as c:
+            row = c.execute("SELECT signature, source_ip FROM incidents WHERE incident_id = ?", (inc_id,)).fetchone()
+            if row:
+                sig = sig or row["signature"]
+                target_ip = target_ip or row["source_ip"]
+
+    if not target_ip:
+        return jsonify(error="Field 'target_ip' is required"), 400
+
+    policy = get_response_policy(sig)
+
+    if not policy["is_supported"]:
+        reason = policy.get("pending_reason") or f"Application instrumentation for {policy['signature']} pending deployment"
+        timeout_val = policy.get("duration_seconds")
+        try:
+            target_clean = valid_ip(target_ip)
+        except Exception as e:
+            return jsonify(error=str(e)), 400
+
+        with db() as c:
+            cur = c.execute("""
+                INSERT INTO response_actions
+                (incident_id, target_ip, action_type, status, triggered_by, created_at, timeout_seconds, message)
+                VALUES (?, ?, ?, 'PENDING_IMPLEMENTATION', 'SOC_ANALYST', ?, ?, ?)
+            """, (inc_id, target_clean, policy["action_type"], now(), timeout_val, reason))
+            aid = cur.lastrowid
+
+            if inc_id:
+                c.execute("""
+                    INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                    VALUES (?, 'SOC_ANALYST', ?, ?, 'CONTAINMENT_REQUEST')
+                """, (inc_id, now(), f"Policy {policy['policy_name']} evaluated: {policy['selected_response']}. Action #{aid} marked PENDING_IMPLEMENTATION ({reason})."))
+
+        return jsonify(
+            status="PENDING_IMPLEMENTATION",
+            action_id=aid,
+            incident_id=inc_id,
+            supported=False,
+            policy=policy,
+            message=reason
+        ), 200
+
+    timeout_sec = d.get("timeout_seconds") or policy.get("duration_seconds")
+    try:
+        aid = enqueue(target_ip, policy.get("action_type", "BLOCK_IP"), "SOC_ANALYST", timeout_sec, inc_id, policy["policy_name"])
+    except (KeyError, ValueError, TypeError) as e:
+        return jsonify(error=str(e)), 400
+
+    if inc_id:
+        try:
+            with db() as c:
+                c.execute("UPDATE incidents SET status = 'CONTAINMENT_PENDING_APPROVAL', updated_at = ? WHERE incident_id = ?", (now(), inc_id))
+                c.execute("""
+                    INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                    VALUES (?, 'SOC_ANALYST', ?, ?, 'CONTAINMENT_REQUEST')
+                """, (inc_id, now(), f"Containment action #{aid} ({policy['selected_response']}) queued for target {target_ip}. Status: PENDING_APPROVAL"))
+        except Exception:
+            pass
+
+    return jsonify(status="PENDING_APPROVAL", action_id=aid, incident_id=inc_id, supported=True, policy=policy), 202
+
+@app.get("/api/soc/response-policies")
+@auth("analyst")
+def list_response_policies():
+    return jsonify(
+        status="success",
+        policies=RESPONSE_POLICIES,
+        fallback_policy=SAFE_FALLBACK_POLICY,
+        supported_signatures=[k for k, v in RESPONSE_POLICIES.items() if v.get("is_supported")],
+        soar_mode=get_soar_mode(),
+        soar_dry_run=is_soar_dry_run()
+    )
+
+@app.get("/api/soc/response-policies/<signature>")
+@auth("analyst")
+def get_signature_response_policy(signature):
+    pol = get_response_policy(signature)
+    return jsonify(
+        status="success",
+        signature=signature,
+        policy=pol,
+        soar_mode=get_soar_mode(),
+        soar_dry_run=is_soar_dry_run()
+    )
 
 @app.post("/api/soc/mitigate/unblock")
 @auth("analyst")
@@ -1455,7 +1816,9 @@ def list_response_actions():
         actions=actions,
         active_temporary_controls_count=active_temp_count,
         expired_controls_count=expired_count,
-        verified_count=verified_count
+        verified_count=verified_count,
+        soar_mode=get_soar_mode(),
+        soar_dry_run=is_soar_dry_run()
     )
 
 @app.get("/api/soc/temporary-controls")
@@ -1501,7 +1864,9 @@ def list_temporary_controls():
         active_count=len(active),
         expired_count=len(expired),
         active_controls=active,
-        expired_controls=expired
+        expired_controls=expired,
+        soar_mode=get_soar_mode(),
+        soar_dry_run=is_soar_dry_run()
     )
 
 @app.get("/api/soc/mitre-matrix")
@@ -1598,6 +1963,8 @@ def matrix():
         mitigated_techniques=mitigated_count,
         distinct_detected=list(distinct_detected_techs),
         distinct_mitigated=list(qualifying_mitigated),
+        soar_mode=get_soar_mode(),
+        soar_dry_run=is_soar_dry_run(),
         note="MITIGATED requires independent verification; execution alone is insufficient."
     )
 
@@ -1644,6 +2011,7 @@ def list_incidents():
             inc["technique_id"] = reg_info[0]
             inc["technique_name"] = reg_info[1]
             inc["tactic"] = reg_info[2]
+            inc["response_policy"] = get_response_policy(sig)
 
             # Count alerts
             cnt = c.execute("SELECT COUNT(*) FROM alerts WHERE incident_id = ?", (inc["incident_id"],)).fetchone()[0]
@@ -1669,7 +2037,7 @@ def list_incidents():
                 ad["expires_at"] = exp_iso
                 ad["is_temporary"] = bool(ad.get("timeout_seconds") and int(ad["timeout_seconds"]) > 0)
                 actions.append(ad)
-                if ad["is_temporary"] and not is_exp:
+                if ad["is_temporary"] and not is_exp and ad.get("status") in ("VERIFIED", "EXECUTED", "MITIGATION_APPLIED", "VERIFICATION_PENDING", "APPROVED", "PENDING"):
                     active_temp.append(ad)
 
             inc["response_actions"] = actions
@@ -1699,6 +2067,7 @@ def get_incident_details(incident_id):
         inc["technique_id"] = reg_info[0]
         inc["technique_name"] = reg_info[1]
         inc["tactic"] = reg_info[2]
+        inc["response_policy"] = get_response_policy(sig)
 
         # Primary and linked alerts
         alert_rows = c.execute("""
@@ -1759,7 +2128,7 @@ def get_incident_details(incident_id):
                 ad["defense_status"] = "Detected"
 
             actions.append(ad)
-            if ad["is_temporary"] and not is_exp:
+            if ad["is_temporary"] and not is_exp and st in ("VERIFIED", "EXECUTED", "MITIGATION_APPLIED", "VERIFICATION_PENDING", "APPROVED", "PENDING"):
                 active_temp.append(ad)
 
         def_st, primary_act = resolve_incident_defense_status(inc, actions)

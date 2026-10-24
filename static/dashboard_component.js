@@ -181,6 +181,9 @@
   let allResponseActions = [];
   let allReports = [];
   let selectedIncidentId = null;
+  let currentIncidentData = null;
+  let isSubmittingAction = false;
+  let isGlobalRefreshing = false;
   let currentView = "dashboard";
   let alertSeverityFilter = "ALL";
   let alertSignatureFilter = "ALL";
@@ -850,6 +853,7 @@
     try {
       const data = await api(`/api/soc/incidents/${incidentId}`);
       const inc = data.incident;
+      currentIncidentData = inc;
       const alerts = data.alerts || [];
       const actions = data.response_actions || [];
       const timeline = data.timeline || [];
@@ -1004,6 +1008,62 @@
         if (evMessage) {
           const latestMsg = alerts.length > 0 ? (alerts[0].message || "No telemetry message") : "Not available";
           evMessage.textContent = latestMsg;
+        }
+
+        // Populate Attack-Specific Response Policy Card & Dynamic Actions
+        const incPolicyCard = document.getElementById("inc-policy-card");
+        const incPolicyStatusPill = document.getElementById("inc-policy-status-pill");
+        const incPolicySig = document.getElementById("inc-policy-sig");
+        const incPolicyAttackType = document.getElementById("inc-policy-attack-type");
+        const incPolicyResponse = document.getElementById("inc-policy-response");
+        const incPolicyDuration = document.getElementById("inc-policy-duration");
+        const incPolicyVerification = document.getElementById("inc-policy-verification");
+        const incPolicyDescription = document.getElementById("inc-policy-description");
+
+        const policy = inc.response_policy;
+        if (policy && incPolicyCard) {
+          incPolicyCard.hidden = false;
+          if (incPolicySig) incPolicySig.textContent = policy.signature || inc.signature || "N/A";
+          if (incPolicyAttackType) incPolicyAttackType.textContent = policy.attack_type || "Attack Vector";
+          if (incPolicyResponse) incPolicyResponse.textContent = policy.selected_response || "LOG_MONITOR";
+          if (incPolicyDuration) {
+            incPolicyDuration.textContent = policy.duration_seconds
+              ? `${policy.duration_seconds}s (${Math.round(policy.duration_seconds / 60)} min)`
+              : "Immediate / Transactional";
+          }
+          if (incPolicyVerification) incPolicyVerification.textContent = policy.verification_method || "N/A";
+          if (incPolicyDescription) incPolicyDescription.textContent = policy.description || "N/A";
+          if (incPolicyStatusPill) {
+            if (policy.is_supported) {
+              incPolicyStatusPill.className = "badge badge-verified";
+              incPolicyStatusPill.textContent = "SUPPORTED ENFORCEMENT";
+            } else {
+              incPolicyStatusPill.className = "badge badge-purple";
+              incPolicyStatusPill.textContent = "APP-LAYER PROTECTION (PENDING IMPLEMENTATION)";
+            }
+          }
+        }
+
+        // Dynamically update containment action button text and tooltips
+        if (btnWfRequestBlock) {
+          if (policy && !policy.is_supported) {
+            btnWfRequestBlock.textContent = `Apply Policy (${policy.selected_response})`;
+            btnWfRequestBlock.title = `Apply ${policy.selected_response} policy (Application-layer protection — pending instrumentation)`;
+          } else if (policy && policy.is_supported) {
+            const durMin = policy.duration_seconds ? ` (${Math.round(policy.duration_seconds / 60)}m)` : "";
+            btnWfRequestBlock.textContent = `Request ${policy.selected_response}${durMin}`;
+            btnWfRequestBlock.title = `Queue supported host containment: ${policy.selected_response}`;
+          } else {
+            btnWfRequestBlock.textContent = "Request Containment";
+            btnWfRequestBlock.title = "Queue SOAR Containment Block";
+          }
+        }
+        if (btnSnapQuickContain) {
+          if (policy && !policy.is_supported) {
+            btnSnapQuickContain.textContent = `⚡ Policy: ${policy.selected_response}`;
+          } else if (policy && policy.is_supported) {
+            btnSnapQuickContain.textContent = `⚡ Contain: ${policy.selected_response}`;
+          }
         }
 
       // E. Populate Correlated Alerts Table
@@ -1277,6 +1337,7 @@
   }
 
   async function requestContainmentBlock(targetIp = null) {
+    if (isSubmittingAction) return;
     if (!selectedIncidentId) {
       showToast("Select an incident to request containment", "error");
       return;
@@ -1287,18 +1348,40 @@
       return;
     }
 
-    if (!confirm(`Queue SOAR Containment BLOCK_IP action for target ${ip}?\nAction will enter PENDING status awaiting explicit analyst approval.`)) return;
+    const currentInc = currentIncidentData || allIncidents.find(i => String(i.incident_id) === String(selectedIncidentId));
+    const policy = currentInc && currentInc.response_policy;
+    const isAppLayer = policy && !policy.is_supported;
 
+    if (isAppLayer) {
+      if (!confirm(`Apply attack-specific policy ${policy.selected_response} for incident #${selectedIncidentId} (${policy.signature})?\n\nNotice: This attack vector requires application-layer controls (${policy.attack_type}). The action will enter PENDING_IMPLEMENTATION without claiming a firewall block.`)) {
+        return;
+      }
+    } else {
+      const respName = (policy && policy.selected_response) || "BLOCK_IP";
+      const dur = (policy && policy.duration_seconds) || 1800;
+      if (!confirm(`Queue SOAR Containment ${respName} action for target ${ip}?\nDuration: ${dur}s.\nAction will enter PENDING status awaiting explicit analyst approval.`)) {
+        return;
+      }
+    }
+
+    isSubmittingAction = true;
     try {
-      const r = await api("/api/soc/mitigate/block", {
+      const r = await api("/api/soc/mitigate/apply-policy", {
         method: "POST",
-        body: JSON.stringify({ target_ip: ip, incident_id: selectedIncidentId, timeout_seconds: 1800 })
+        body: JSON.stringify({ target_ip: ip, incident_id: selectedIncidentId })
       });
-      showToast(`Containment Action #${r.action_id} queued (PENDING approval)`, "success");
-      fetchIncidents();
-      loadIncidentDetails(selectedIncidentId);
+      if (r.status === "PENDING_IMPLEMENTATION" || r.defense_status === "Untested") {
+        showToast(r.message || `Policy action recorded (PENDING_IMPLEMENTATION)`, "info");
+      } else {
+        showToast(`Containment Action #${r.action_id} queued (PENDING approval)`, "success");
+      }
+      await fetchIncidents();
+      await fetchResponseActions();
+      await loadIncidentDetails(selectedIncidentId);
     } catch (e) {
       showToast(`Containment request failed: ${e.message}`, "error");
+    } finally {
+      isSubmittingAction = false;
     }
   }
 
@@ -1356,9 +1439,34 @@
   }
 
   // =========================================================================
+  // SOAR MODE BADGE MANAGER
+  // =========================================================================
+  function updateSoarModeBadges(soarMode) {
+    const mode = (soarMode || window.SOC_SOAR_MODE || "DRY-RUN").toUpperCase();
+    const isEnforced = mode === "ENFORCEMENT" || mode === "ACTIVE" || mode === "ENABLED";
+    const label = isEnforced ? "SOAR: ENFORCEMENT" : "SOAR: DRY-RUN";
+    const badgeClass = isEnforced ? "badge badge-verified" : "badge badge-amber";
+
+    ["soar-mode-badge", "soar-mode-badge-actions", "soar-mode-badge-poller", "soar-mode-badge-detail"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.textContent = label;
+        el.className = badgeClass;
+      }
+    });
+    const footerEl = document.getElementById("soar-mode-footer");
+    if (footerEl) {
+      footerEl.textContent = label;
+    }
+  }
+
+  // =========================================================================
   // MITRE ATT&CK MATRIX
   // =========================================================================
   function renderMitreMatrix(data) {
+    if (data && data.soar_mode) {
+      updateSoarModeBadges(data.soar_mode);
+    }
     const matrix = data.matrix || [];
     const targetGrids = [grid, gridFull].filter(Boolean);
 
@@ -1726,6 +1834,9 @@
     try {
       const data = await api("/api/soc/response-actions");
       allResponseActions = data.actions || [];
+      if (data && data.soar_mode) {
+        updateSoarModeBadges(data.soar_mode);
+      }
     } catch {
       allResponseActions = [];
       allIncidents.forEach(inc => {
@@ -1746,7 +1857,13 @@
     const actionsContainer = document.getElementById("actions-temp-controls-container");
     const actionsBadge = document.getElementById("actions-temp-controls-badge");
 
-    const activeList = allResponseActions.filter(a => a.is_temporary && !a.is_expired && a.status !== "EXPIRED");
+    const activeList = allResponseActions.filter(a => {
+      if (!a.is_temporary) return false;
+      if (a.is_expired) return false;
+      if (["EXPIRED", "CANCELLED", "FAILED", "VERIFICATION_FAILED", "UNSUPPORTED"].includes(a.status)) return false;
+      if (a.time_remaining_seconds !== null && a.time_remaining_seconds !== undefined && a.time_remaining_seconds <= 0) return false;
+      return true;
+    });
 
     if (statTempControls) statTempControls.textContent = activeList.length;
     if (dashBadge) dashBadge.textContent = `${activeList.length} Active Control${activeList.length === 1 ? "" : "s"}`;
@@ -1965,7 +2082,15 @@
   // =========================================================================
   // GLOBAL REFRESH
   // =========================================================================
-  async function refresh() {
+  async function refresh(isManual = false) {
+    if (isGlobalRefreshing) return;
+    isGlobalRefreshing = true;
+
+    if (btnRefresh) {
+      btnRefresh.classList.add("refreshing");
+      btnRefresh.disabled = true;
+    }
+
     try {
       if (error) {
         error.hidden = true;
@@ -1974,15 +2099,26 @@
 
       const data = await api("/api/soc/mitre-matrix");
       renderMitreMatrix(data);
+      if (data.soar_mode) {
+        updateSoarModeBadges(data.soar_mode);
+      }
 
       if (window.SOC_ANALYST_TOKEN) {
         updateAuthBadge("authenticated");
-        await fetchIncidents();
-        await fetchAlerts();
-        await fetchResponseActions();
-        await fetchReports();
+        await Promise.allSettled([
+          fetchIncidents(),
+          fetchAlerts(),
+          fetchResponseActions(),
+          fetchReports()
+        ]);
+        if (selectedIncidentId) {
+          await loadIncidentDetails(selectedIncidentId).catch(() => {});
+        }
       } else {
         updateAuthBadge("unauthenticated");
+      }
+      if (isManual === true) {
+        showToast("Dashboard telemetry refreshed", "success");
       }
     } catch (e) {
       if (error) {
@@ -1994,6 +2130,15 @@
         updateAuthBadge(window.SOC_ANALYST_TOKEN ? "error" : "unauthenticated", e.message);
       } else {
         updateAuthBadge("error", e.message);
+      }
+      if (isManual === true) {
+        showToast(`Refresh failed: ${e.message}`, "error");
+      }
+    } finally {
+      isGlobalRefreshing = false;
+      if (btnRefresh) {
+        btnRefresh.classList.remove("refreshing");
+        btnRefresh.disabled = false;
       }
     }
   }
@@ -2009,19 +2154,29 @@
     }
 
     window.SOC_ANALYST_TOKEN = cleanToken;
+    try {
+      sessionStorage.setItem("SOC_ANALYST_TOKEN", cleanToken);
+      localStorage.setItem("SOC_ANALYST_TOKEN", cleanToken);
+    } catch (_) {}
+
     if (tokenInput) tokenInput.value = cleanToken;
     if (modalTokenInput) modalTokenInput.value = cleanToken;
     updateAuthBadge("checking");
-    refresh();
-    showToast("Analyst token configured in memory", "success");
+    refresh(true);
+    showToast("Analyst token configured and saved", "success");
   }
 
   function clearToken() {
     window.SOC_ANALYST_TOKEN = "";
+    try {
+      sessionStorage.removeItem("SOC_ANALYST_TOKEN");
+      localStorage.removeItem("SOC_ANALYST_TOKEN");
+    } catch (_) {}
+
     if (tokenInput) tokenInput.value = "";
     if (modalTokenInput) modalTokenInput.value = "";
     updateAuthBadge("unauthenticated");
-    refresh();
+    refresh(true);
     showToast("Analyst session cleared", "info");
   }
 
@@ -2056,13 +2211,74 @@
       });
     }
 
-    // Refresh Buttons
-    if (btnRefresh) btnRefresh.addEventListener("click", refresh);
-    if (btnRefreshAlerts) btnRefreshAlerts.addEventListener("click", fetchAlerts);
-    if (btnRefreshIncidentDetail) btnRefreshIncidentDetail.addEventListener("click", () => {
-      if (selectedIncidentId) loadIncidentDetails(selectedIncidentId);
-    });
-    if (btnRefreshReportsList) btnRefreshReportsList.addEventListener("click", fetchReports);
+    // Refresh Buttons with loading states and debounce/in-flight guards
+    if (btnRefresh) {
+      btnRefresh.addEventListener("click", () => refresh(true));
+    }
+
+    if (btnRefreshAlerts) {
+      let isAlertsRefreshing = false;
+      btnRefreshAlerts.addEventListener("click", async () => {
+        if (isAlertsRefreshing) return;
+        isAlertsRefreshing = true;
+        btnRefreshAlerts.disabled = true;
+        btnRefreshAlerts.classList.add("refreshing");
+        try {
+          await fetchAlerts();
+          showToast("Alerts refreshed", "success");
+        } catch (e) {
+          showToast(`Alerts refresh failed: ${e.message}`, "error");
+        } finally {
+          isAlertsRefreshing = false;
+          btnRefreshAlerts.disabled = false;
+          btnRefreshAlerts.classList.remove("refreshing");
+        }
+      });
+    }
+
+    if (btnRefreshIncidentDetail) {
+      let isDetailRefreshing = false;
+      btnRefreshIncidentDetail.addEventListener("click", async () => {
+        if (isDetailRefreshing) return;
+        if (!selectedIncidentId) {
+          showToast("No active incident selected to refresh", "info");
+          return;
+        }
+        isDetailRefreshing = true;
+        btnRefreshIncidentDetail.disabled = true;
+        btnRefreshIncidentDetail.classList.add("refreshing");
+        try {
+          await loadIncidentDetails(selectedIncidentId);
+          showToast(`Incident #${selectedIncidentId} refreshed`, "success");
+        } catch (e) {
+          showToast(`Incident refresh failed: ${e.message}`, "error");
+        } finally {
+          isDetailRefreshing = false;
+          btnRefreshIncidentDetail.disabled = false;
+          btnRefreshIncidentDetail.classList.remove("refreshing");
+        }
+      });
+    }
+
+    if (btnRefreshReportsList) {
+      let isReportsRefreshing = false;
+      btnRefreshReportsList.addEventListener("click", async () => {
+        if (isReportsRefreshing) return;
+        isReportsRefreshing = true;
+        btnRefreshReportsList.disabled = true;
+        btnRefreshReportsList.classList.add("refreshing");
+        try {
+          await fetchReports();
+          showToast("Reports history refreshed", "success");
+        } catch (e) {
+          showToast(`Reports refresh failed: ${e.message}`, "error");
+        } finally {
+          isReportsRefreshing = false;
+          btnRefreshReportsList.disabled = false;
+          btnRefreshReportsList.classList.remove("refreshing");
+        }
+      });
+    }
 
     // Back to Alerts / Investigations Buttons
     if (btnBackToAlerts) {
@@ -2504,6 +2720,16 @@
   updateClock();
   setInterval(updateClock, 1000);
   setInterval(updateTemporaryControlCountdowns, 1000);
+
+  // Restore persisted auth token
+  try {
+    const savedToken = sessionStorage.getItem("SOC_ANALYST_TOKEN") || localStorage.getItem("SOC_ANALYST_TOKEN") || "";
+    if (savedToken && !window.SOC_ANALYST_TOKEN) {
+      window.SOC_ANALYST_TOKEN = savedToken;
+      if (tokenInput) tokenInput.value = savedToken;
+      if (modalTokenInput) modalTokenInput.value = savedToken;
+    }
+  } catch (_) {}
 
   // Check initial hash route
   handleHashChange();

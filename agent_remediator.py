@@ -32,11 +32,39 @@ _load_env_file()
 SOC_BASE_URL = os.getenv("SOC_BASE_URL", "http://127.0.0.1:8443").rstrip("/")
 TOKEN = os.getenv("SOC_AGENT_TOKEN") or os.getenv("SOC_API_KEY") or ""
 POLL_SECONDS = max(2, int(os.getenv("SOC_POLL_SECONDS", "3")))
-DRY_RUN = os.getenv("SOAR_DRY_RUN", "true").lower() == "true"
+ENFORCEMENT_MODE = os.getenv("SOAR_ENFORCEMENT_MODE", "").lower().strip() in ("true", "1", "enabled", "enforce")
+DRY_RUN = not ENFORCEMENT_MODE and (os.getenv("SOAR_DRY_RUN", "true").lower().strip() != "false")
 VERIFY_TLS = os.getenv("SOC_VERIFY_TLS", "false").lower() == "true"
 FAMILY, TABLE, SET = "inet", "mini_enterprise", "blocked_ips"
 TIMEOUT = (3.05, 8)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+def is_management_ip(raw_ip):
+    try:
+        ip = ipaddress.ip_address(raw_ip)
+        if ip.is_loopback:
+            return True
+        from urllib.parse import urlsplit
+        host = urlsplit(SOC_BASE_URL).hostname
+        if host:
+            try:
+                if ip == ipaddress.ip_address(host):
+                    return True
+            except ValueError:
+                pass
+        prot = os.getenv("PROTECTED_IPS", "")
+        if prot:
+            for p in prot.split(","):
+                p = p.strip()
+                if p:
+                    try:
+                        if ip == ipaddress.ip_address(p) or ip in ipaddress.ip_network(p, strict=False):
+                            return True
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return False
 
 def validate_ip(raw):
     ip = ipaddress.ip_address(raw)
@@ -59,32 +87,40 @@ def is_blocked(ip):
 
 def block_ip(raw_ip, timeout_seconds=None):
     ip = validate_ip(raw_ip)
+    if is_management_ip(ip):
+        raise ValueError(f"Cannot block target IP '{ip}': management connection is protected")
     if timeout_seconds is not None and not 1 <= int(timeout_seconds) <= 604800:
         raise ValueError("Timed block must be 1 second to 7 days")
     if DRY_RUN:
         logging.warning("[DRY RUN] Would block %s timeout=%s", ip, timeout_seconds)
-        return True
+        return True, f"[DRY_RUN] Simulated containment: would block {ip} (timeout={timeout_seconds}s)"
     if is_blocked(ip):
-        return True
+        return True, f"table inet {TABLE} {{ set {SET} {{ elements = {{ {ip} }} }} }}"
     element = ip if timeout_seconds is None else f"{ip} timeout {int(timeout_seconds)}s"
-    result = nft_file(f"add element {FAMILY} {TABLE} {SET} {{ {element} }}\\n")
+    result = nft_file(f"add element {FAMILY} {TABLE} {SET} {{ {element} }}\n")
     if result.returncode:
-        logging.error("nft block failed: %s", result.stderr.strip())
-        return False
-    return is_blocked(ip)
+        err = result.stderr.strip() or "nft command execution failed"
+        logging.error("nft block failed: %s", err)
+        return False, err
+    if not is_blocked(ip):
+        return False, "Element was added but IP was not confirmed in nftables set"
+    return True, f"table inet {TABLE} {{ set {SET} {{ elements = {{ {ip} }} }} }}"
 
 def unblock_ip(raw_ip):
     ip = validate_ip(raw_ip)
     if DRY_RUN:
         logging.warning("[DRY RUN] Would unblock %s", ip)
-        return True
+        return True, f"[DRY_RUN] Simulated rollback: would unblock {ip}"
     if not is_blocked(ip):
-        return True
-    result = nft_file(f"delete element {FAMILY} {TABLE} {SET} {{ {ip} }}\\n")
+        return True, f"IP {ip} not found in set {SET}"
+    result = nft_file(f"delete element {FAMILY} {TABLE} {SET} {{ {ip} }}\n")
     if result.returncode:
-        logging.error("nft unblock failed: %s", result.stderr.strip())
-        return False
-    return not is_blocked(ip)
+        err = result.stderr.strip() or "nft command execution failed"
+        logging.error("nft unblock failed: %s", err)
+        return False, err
+    if is_blocked(ip):
+        return False, "Delete command succeeded but IP still confirmed in set"
+    return True, f"IP {ip} removed from set {SET}"
 
 def headers():
     if not TOKEN:
@@ -99,17 +135,43 @@ def report(action_id, status, message=""):
 
 def execute(action):
     action_id = int(action["action_id"])
+    target_ip = action.get("target_ip")
+    kind = action.get("type")
+
     try:
-        kind = action.get("type")
+        if kind not in ("BLOCK_IP", "UNBLOCK_IP"):
+            msg = f"Unsupported action type '{kind}': requires application instrumentation pending deployment"
+            logging.warning("Action %s: %s", action_id, msg)
+            report(action_id, "FAILED", msg)
+            return
+
+        if is_management_ip(target_ip):
+            msg = f"Target IP {target_ip} is protected management connection; containment rejected"
+            logging.error("Action %s: %s", action_id, msg)
+            report(action_id, "FAILED", msg)
+            return
+
+        if DRY_RUN:
+            logging.warning("[DRY RUN] Would execute %s on %s timeout=%s", kind, target_ip, action.get("timeout_seconds"))
+            report(action_id, "DRY_RUN", f"[DRY_RUN] Simulated containment: would {kind} {target_ip}")
+            return
+
+        # Real enforcement mode: execute supported containment on host
         if kind == "BLOCK_IP":
-            ok = block_ip(action["target_ip"], action.get("timeout_seconds"))
+            ok, evidence = block_ip(target_ip, action.get("timeout_seconds"))
         elif kind == "UNBLOCK_IP":
-            ok = unblock_ip(action["target_ip"])
+            ok, evidence = unblock_ip(target_ip)
         else:
-            raise ValueError("Unsupported action type")
-        # DRY_RUN must never be presented as a real containment.
-        status = "FAILED" if not ok else ("DRY_RUN" if DRY_RUN else "EXECUTED")
-        report(action_id, status, "Dry-run only" if DRY_RUN else "")
+            ok, evidence = False, "Unsupported action type"
+
+        if not ok:
+            logging.error("Real enforcement failed for action %s on %s: %s", action_id, target_ip, evidence)
+            report(action_id, "FAILED", f"Real enforcement failed: {evidence}")
+            return
+
+        logging.info("Real enforcement executed for action %s on %s: %s", action_id, target_ip, evidence)
+        report(action_id, "EXECUTED", f"Host nftables rule confirmed: {evidence}")
+
     except Exception as exc:
         logging.exception("Action %s failed", action_id)
         try: report(action_id, "FAILED", str(exc))
