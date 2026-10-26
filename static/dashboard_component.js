@@ -48,6 +48,41 @@
   const focusBtnLabel = document.getElementById("focus-btn-label");
   const btnRefreshAlerts = document.getElementById("btn-refresh-alerts");
 
+  // Alert Multi-Dimensional Filter Elements
+  const alertsClassFilter = document.getElementById("alerts-class-filter");
+  const alertsMethodFilter = document.getElementById("alerts-method-filter");
+  const alertsStatusFilter = document.getElementById("alerts-status-filter");
+
+  // Telemetry Status Banner Elements
+  const telemetryHealthBanner = document.getElementById("telemetry-health-banner");
+  const telemetryStatusText = document.getElementById("telemetry-status-text");
+  const telemetryLastSeen = document.getElementById("telemetry-last-seen");
+  const telemetryCountAttacks = document.getElementById("telemetry-count-attacks");
+  const telemetryCountAnomalies = document.getElementById("telemetry-count-anomalies");
+  const telemetryCountUnknown = document.getElementById("telemetry-count-unknown");
+
+  // Alert Detail Modal Elements
+  const modalAlertDetail = document.getElementById("modal-alert-detail");
+  const modalAlertTitle = document.getElementById("modal-alert-title");
+  const modalAlertSubtitle = document.getElementById("modal-alert-subtitle");
+  const modalAlertBadges = document.getElementById("modal-alert-badges");
+  const modalAlertSourceIp = document.getElementById("modal-alert-source-ip");
+  const modalAlertDest = document.getElementById("modal-alert-dest");
+  const modalAlertPath = document.getElementById("modal-alert-path");
+  const modalAlertStatusCode = document.getElementById("modal-alert-status-code");
+  const modalAlertIncident = document.getElementById("modal-alert-incident");
+  const modalAlertModel = document.getElementById("modal-alert-model");
+  const modalAlertReason = document.getElementById("modal-alert-reason");
+  const modalAlertMetaJson = document.getElementById("modal-alert-meta-json");
+  const modalAlertSetStatus = document.getElementById("modal-alert-set-status");
+  const modalAlertRationale = document.getElementById("modal-alert-rationale");
+  const btnSaveAlertStatus = document.getElementById("btn-save-alert-status");
+  const modalAlertNotesList = document.getElementById("modal-alert-notes-list");
+  const modalAlertNewNote = document.getElementById("modal-alert-new-note");
+  const btnAddAlertNote = document.getElementById("btn-add-alert-note");
+  const modalCloseAlertDetail = document.getElementById("modal-close-alert-detail");
+  const modalBtnCloseAlertDetail = document.getElementById("modal-btn-close-alert-detail");
+
   // Investigations Queue Elements
   const incidentsListEl = document.getElementById("incidents-list");
   const queueCountBadgeEl = document.getElementById("queue-count-badge");
@@ -187,6 +222,10 @@
   let currentView = "dashboard";
   let alertSeverityFilter = "ALL";
   let alertSignatureFilter = "ALL";
+  let alertClassFilter = "ALL";
+  let alertMethodFilter = "ALL";
+  let alertStatusFilter = "ALL";
+  let activeModalAlertId = null;
   let alertSearchQuery = "";
   let focusMode = false;
   let incidentStatusFilter = "ALL";
@@ -548,6 +587,7 @@
     }
 
     renderAlertsGrid();
+    fetchTelemetryStatus();
   }
 
   function renderAlertsGrid() {
@@ -563,6 +603,18 @@
       if (alertSignatureFilter !== "ALL" && a.signature !== alertSignatureFilter) {
         return false;
       }
+      // Classification category filter
+      if (alertClassFilter !== "ALL" && (a.classification_type || "known_attack") !== alertClassFilter) {
+        return false;
+      }
+      // Detection method filter
+      if (alertMethodFilter !== "ALL" && (a.detection_method || "rule") !== alertMethodFilter) {
+        return false;
+      }
+      // Disposition / Status filter
+      if (alertStatusFilter !== "ALL" && (a.analyst_disposition || a.status || "new") !== alertStatusFilter) {
+        return false;
+      }
       // Search query
       if (alertSearchQuery) {
         const q = alertSearchQuery.toLowerCase();
@@ -571,7 +623,10 @@
         const matchMsg = (a.message || "").toLowerCase().includes(q);
         const matchTech = (a.technique_name || "").toLowerCase().includes(q);
         const matchPath = (a.requested_path || "").toLowerCase().includes(q);
-        if (!matchIp && !matchSig && !matchMsg && !matchTech && !matchPath) return false;
+        const matchClass = (a.classification_type || "").toLowerCase().includes(q);
+        const matchMethod = (a.detection_method || "").toLowerCase().includes(q);
+        const matchModel = (a.model_name || "").toLowerCase().includes(q);
+        if (!matchIp && !matchSig && !matchMsg && !matchTech && !matchPath && !matchClass && !matchMethod && !matchModel) return false;
       }
       return true;
     });
@@ -589,14 +644,43 @@
       const card = node("article", `alert-item-card${focusMode ? " focus-compact" : ""}`);
       card.setAttribute("data-event-id", alert.event_id || "");
 
-      // Top Row: Severity, Source, Relative Time
+      // Top Row: Severity, Classification, Detection Method, Scores, Relative Time
       const top = node("div", "alert-card-header");
       const leftTop = node("div", "d-flex align-center gap-8");
       leftTop.style.display = "flex";
       leftTop.style.alignItems = "center";
       leftTop.style.gap = "8px";
+      leftTop.style.flexWrap = "wrap";
+
+      // Severity badge
       leftTop.append(node("span", `badge ${getSeverityClass(alert.severity)}`, String(alert.severity || "medium").toUpperCase()));
-      leftTop.append(node("span", "alert-source-type", alert.signature || "SUSPICIOUS"));
+
+      // Classification type badge
+      const classType = alert.classification_type || "known_attack";
+      const classBadgeCls = classType === "known_attack" ? "badge-red" : (classType === "suspicious_anomaly" ? "badge-amber" : "badge-purple");
+      const classBadgeText = classType === "known_attack" ? "KNOWN ATTACK" : (classType === "suspicious_anomaly" ? "SUSPICIOUS ANOMALY" : "UNKNOWN / OOD");
+      leftTop.append(node("span", `badge ${classBadgeCls}`, classBadgeText));
+
+      // Detection method badge
+      const methodType = alert.detection_method || "rule";
+      const methodBadgeCls = methodType === "ml_model" ? "badge-purple" : (methodType === "statistical_anomaly" ? "badge-cyan" : "badge-neutral");
+      leftTop.append(node("span", `badge ${methodBadgeCls}`, String(methodType).replace("_", " ").toUpperCase()));
+
+      // Confidence & Anomaly Score Pills
+      if (alert.confidence !== null && alert.confidence !== undefined) {
+        leftTop.append(node("span", "badge badge-cyan", `Conf: ${(Number(alert.confidence) * 100).toFixed(0)}%`));
+      }
+      if (alert.anomaly_score !== null && alert.anomaly_score !== undefined) {
+        leftTop.append(node("span", "badge badge-amber", `Score: ${Number(alert.anomaly_score).toFixed(2)}`));
+      }
+
+      // Disposition badge
+      const disp = alert.analyst_disposition || alert.status || "new";
+      if (disp !== "new") {
+        const dispBadgeCls = disp === "confirmed" ? "badge-red" : (disp === "investigating" ? "badge-amber" : (disp === "resolved" ? "badge-verified" : "badge-slate"));
+        leftTop.append(node("span", `badge ${dispBadgeCls}`, disp.toUpperCase()));
+      }
+
       top.append(leftTop);
 
       const timeSpan = node("span", "alert-time-relative", getRelativeTime(alert.timestamp));
@@ -613,11 +697,14 @@
         card.append(node("p", "alert-desc", alert.message));
       }
 
-      // Metadata Chips (IP, HTTP Method, Path, Status)
+      // Metadata Chips (IP, Destination, HTTP Method, Path, Status, MITRE)
       const chips = node("div", "alert-meta-chips");
       const ipChip = node("span", "meta-chip meta-chip-ip mono-text", `IP: ${alert.source_ip}`);
       chips.append(ipChip);
 
+      if (alert.destination_ip) {
+        chips.append(node("span", "meta-chip mono-text", `Dest: ${alert.destination_ip}:${alert.destination_port || 80}`));
+      }
       if (alert.http_method) {
         chips.append(node("span", "meta-chip mono-text", alert.http_method));
       }
@@ -629,6 +716,9 @@
       }
       if (alert.mitre_id) {
         chips.append(node("span", "meta-chip", `${alert.mitre_id} (${alert.tactic || "Adversary Tactic"})`));
+      }
+      if (alert.model_name) {
+        chips.append(node("span", "meta-chip", `Model: ${alert.model_name}`));
       }
       card.append(chips);
 
@@ -644,6 +734,16 @@
 
       const actionCluster = node("div", "alert-action-cluster");
 
+      // Inspect Alert Details modal button
+      const inspectBtn = node("button", "btn btn-outline btn-xs", "Inspect Alert");
+      inspectBtn.type = "button";
+      inspectBtn.title = "View detailed telemetry, raw metadata, and analyst disposition";
+      inspectBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAlertDetailModal(alert.id || alert.event_id || alert.alert_id);
+      });
+      actionCluster.append(inspectBtn);
+
       // Copy IP action
       const copyBtn = node("button", "btn btn-outline btn-xs", "Copy IP");
       copyBtn.type = "button";
@@ -654,7 +754,7 @@
       });
       actionCluster.append(copyBtn);
 
-      // Primary "Investigate / View Details" Action Button
+      // Primary "Investigate / Dossier" Action Button
       const invBtn = node("button", "btn btn-primary btn-sm", "Investigate");
       invBtn.type = "button";
       invBtn.title = alert.incident_id ? `Open dedicated dossier for Incident #${alert.incident_id}` : "Investigate correlated incidents";
@@ -678,6 +778,211 @@
       card.append(footer);
 
       alertsGrid.append(card);
+    }
+  }
+
+  // =========================================================================
+  // TELEMETRY PIPELINE STATUS
+  // =========================================================================
+  async function fetchTelemetryStatus() {
+    try {
+      const data = await api("/api/soc/telemetry/status");
+      if (telemetryStatusText) {
+        telemetryStatusText.textContent = data.pipeline_status || "Operational";
+      }
+      if (telemetryLastSeen) {
+        telemetryLastSeen.textContent = data.last_event_time ? getRelativeTime(data.last_event_time) : "None recorded";
+      }
+      if (telemetryCountAttacks) {
+        telemetryCountAttacks.textContent = (data.classification_counts && data.classification_counts.known_attack) || 0;
+      }
+      if (telemetryCountAnomalies) {
+        telemetryCountAnomalies.textContent = (data.classification_counts && data.classification_counts.suspicious_anomaly) || 0;
+      }
+      if (telemetryCountUnknown) {
+        telemetryCountUnknown.textContent = (data.classification_counts && data.classification_counts.unknown) || 0;
+      }
+    } catch (_) {
+      // Non-blocking telemetry banner update
+    }
+  }
+
+  // =========================================================================
+  // ALERT DETAIL MODAL & ANALYST DISPOSITION
+  // =========================================================================
+  async function openAlertDetailModal(identifier) {
+    if (!modalAlertDetail) return;
+    activeModalAlertId = identifier;
+
+    // Reset fields to loading state
+    if (modalAlertTitle) modalAlertTitle.textContent = "Loading Alert Details...";
+    if (modalAlertSubtitle) modalAlertSubtitle.textContent = `Identifier: ${identifier}`;
+    if (modalAlertBadges) modalAlertBadges.replaceChildren();
+    if (modalAlertSourceIp) modalAlertSourceIp.textContent = "...";
+    if (modalAlertDest) modalAlertDest.textContent = "...";
+    if (modalAlertPath) modalAlertPath.textContent = "...";
+    if (modalAlertStatusCode) modalAlertStatusCode.textContent = "...";
+    if (modalAlertIncident) modalAlertIncident.textContent = "...";
+    if (modalAlertModel) modalAlertModel.textContent = "...";
+    if (modalAlertReason) modalAlertReason.textContent = "Fetching detection telemetry...";
+    if (modalAlertMetaJson) modalAlertMetaJson.textContent = "{}";
+    if (modalAlertNotesList) modalAlertNotesList.innerHTML = '<p class="muted text-xs">Loading notes...</p>';
+    if (modalAlertRationale) modalAlertRationale.value = "";
+    if (modalAlertNewNote) modalAlertNewNote.value = "";
+
+    modalAlertDetail.hidden = false;
+
+    try {
+      const res = await api(`/api/soc/alerts/${encodeURIComponent(identifier)}`);
+      const alert = res.alert || {};
+      const notes = res.notes || [];
+
+      if (modalAlertTitle) {
+        modalAlertTitle.textContent = alert.technique_name || alert.signature || "Security Telemetry Alert";
+      }
+      if (modalAlertSubtitle) {
+        modalAlertSubtitle.textContent = `Event ID: ${alert.event_id || "--"} | Recorded: ${alert.timestamp || "--"}`;
+      }
+
+      // Badges
+      if (modalAlertBadges) {
+        modalAlertBadges.replaceChildren();
+        // Severity
+        modalAlertBadges.append(node("span", `badge ${getSeverityClass(alert.severity)}`, String(alert.severity || "medium").toUpperCase()));
+        // Classification
+        const cType = alert.classification_type || "known_attack";
+        const cCls = cType === "known_attack" ? "badge-red" : (cType === "suspicious_anomaly" ? "badge-amber" : "badge-purple");
+        modalAlertBadges.append(node("span", `badge ${cCls}`, cType.toUpperCase()));
+        // Detection Method
+        const mType = alert.detection_method || "rule";
+        modalAlertBadges.append(node("span", "badge badge-neutral", mType.toUpperCase()));
+        // Disposition
+        const sType = alert.analyst_disposition || alert.status || "new";
+        const sCls = sType === "confirmed" ? "badge-red" : (sType === "investigating" ? "badge-amber" : (sType === "resolved" ? "badge-verified" : "badge-neutral"));
+        modalAlertBadges.append(node("span", `badge ${sCls}`, `DISPOSITION: ${sType.toUpperCase()}`));
+
+        if (alert.confidence !== null && alert.confidence !== undefined) {
+          modalAlertBadges.append(node("span", "badge badge-cyan", `Confidence: ${(Number(alert.confidence) * 100).toFixed(0)}%`));
+        }
+        if (alert.anomaly_score !== null && alert.anomaly_score !== undefined) {
+          modalAlertBadges.append(node("span", "badge badge-amber", `Anomaly Score: ${Number(alert.anomaly_score).toFixed(2)}`));
+        }
+        if (alert.model_name) {
+          modalAlertBadges.append(node("span", "badge badge-purple", `Model: ${alert.model_name} v${alert.model_version || "1.0"}`));
+        }
+      }
+
+      // Attributes Grid
+      if (modalAlertSourceIp) modalAlertSourceIp.textContent = alert.source_ip || "--";
+      if (modalAlertDest) {
+        const destStr = alert.destination_ip ? `${alert.destination_ip}:${alert.destination_port || 80}` : "--";
+        const protoStr = alert.protocol ? ` [${alert.protocol}]` : "";
+        modalAlertDest.textContent = destStr + protoStr;
+      }
+      if (modalAlertPath) modalAlertPath.textContent = `${alert.http_method || "N/A"} ${alert.requested_path || "N/A"}`;
+      if (modalAlertStatusCode) modalAlertStatusCode.textContent = `HTTP ${alert.response_status || "--"} @ ${alert.timestamp || "--"}`;
+      if (modalAlertIncident) {
+        modalAlertIncident.textContent = alert.incident_id ? `#INC-${alert.incident_id} (${alert.incident_status || "OPEN"})` : "Uncorrelated Alert";
+      }
+      if (modalAlertModel) {
+        modalAlertModel.textContent = alert.model_name ? `${alert.model_name} (${alert.model_version || "1.0"})` : `${alert.detection_method || "rule"}`;
+      }
+      if (modalAlertReason) {
+        modalAlertReason.textContent = alert.evidence || alert.message || "No specific detection payload recorded.";
+      }
+      if (modalAlertMetaJson) {
+        modalAlertMetaJson.textContent = JSON.stringify(alert.metadata || {}, null, 2);
+      }
+      if (modalAlertSetStatus) {
+        modalAlertSetStatus.value = alert.analyst_disposition || alert.status || "investigating";
+      }
+
+      renderAlertNotesList(notes);
+    } catch (err) {
+      showToast(`Failed to load alert details: ${err.message}`, "error");
+      closeAlertDetailModal();
+    }
+  }
+
+  function renderAlertNotesList(notes) {
+    if (!modalAlertNotesList) return;
+    if (!notes || notes.length === 0) {
+      modalAlertNotesList.innerHTML = '<p class="muted text-xs">No analyst notes recorded yet.</p>';
+      return;
+    }
+    modalAlertNotesList.replaceChildren();
+    notes.forEach(n => {
+      const row = node("div", "alert-note-entry");
+      row.style.background = "rgba(15,23,42,0.6)";
+      row.style.padding = "6px 10px";
+      row.style.borderRadius = "4px";
+      row.style.marginBottom = "6px";
+      row.style.borderLeft = "2px solid #6366f1";
+      const header = node("div", "d-flex justify-between text-xs muted");
+      header.style.display = "flex";
+      header.style.justifyContent = "space-between";
+      header.append(node("strong", null, n.author || "analyst"));
+      header.append(node("span", "mono-text", getRelativeTime(n.timestamp)));
+      const text = node("p", "text-sm", n.note);
+      text.style.margin = "4px 0 0";
+      text.style.color = "#e2e8f0";
+      row.append(header, text);
+      modalAlertNotesList.append(row);
+    });
+  }
+
+  function closeAlertDetailModal() {
+    if (modalAlertDetail) modalAlertDetail.hidden = true;
+    activeModalAlertId = null;
+  }
+
+  async function saveAlertStatus() {
+    if (!activeModalAlertId) return;
+    const status = modalAlertSetStatus ? modalAlertSetStatus.value : "investigating";
+    const rationale = modalAlertRationale ? modalAlertRationale.value.trim() : "";
+
+    try {
+      const res = await api(`/api/soc/alerts/${encodeURIComponent(activeModalAlertId)}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status, rationale })
+      });
+      showToast(res.message || "Alert disposition updated", "success");
+      // Update local alert list item
+      const item = allAlerts.find(a => String(a.id) === String(activeModalAlertId) || a.event_id === activeModalAlertId);
+      if (item) {
+        item.status = status;
+        item.analyst_disposition = status;
+      }
+      renderAlertsGrid();
+      // Re-fetch detail to show new status & audit note
+      await openAlertDetailModal(activeModalAlertId);
+    } catch (err) {
+      showToast(`Failed to update status: ${err.message}`, "error");
+    }
+  }
+
+  async function addAlertNote() {
+    if (!activeModalAlertId || !modalAlertNewNote) return;
+    const note = modalAlertNewNote.value.trim();
+    if (!note) {
+      showToast("Please enter a note", "error");
+      return;
+    }
+
+    try {
+      const res = await api(`/api/soc/alerts/${encodeURIComponent(activeModalAlertId)}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ note })
+      });
+      showToast("Analyst note added", "success");
+      modalAlertNewNote.value = "";
+      if (res.notes) {
+        renderAlertNotesList(res.notes);
+      } else {
+        await openAlertDetailModal(activeModalAlertId);
+      }
+    } catch (err) {
+      showToast(`Failed to add note: ${err.message}`, "error");
     }
   }
 
@@ -2109,7 +2414,8 @@
           fetchIncidents(),
           fetchAlerts(),
           fetchResponseActions(),
-          fetchReports()
+          fetchReports(),
+          fetchTelemetryStatus()
         ]);
         if (selectedIncidentId) {
           await loadIncidentDetails(selectedIncidentId).catch(() => {});
@@ -2308,6 +2614,49 @@
       alertsSigFilter.addEventListener("change", () => {
         alertSignatureFilter = alertsSigFilter.value;
         renderAlertsGrid();
+      });
+    }
+
+    if (alertsClassFilter) {
+      alertsClassFilter.addEventListener("change", () => {
+        alertClassFilter = alertsClassFilter.value;
+        renderAlertsGrid();
+      });
+    }
+
+    if (alertsMethodFilter) {
+      alertsMethodFilter.addEventListener("change", () => {
+        alertMethodFilter = alertsMethodFilter.value;
+        renderAlertsGrid();
+      });
+    }
+
+    if (alertsStatusFilter) {
+      alertsStatusFilter.addEventListener("change", () => {
+        alertStatusFilter = alertsStatusFilter.value;
+        renderAlertsGrid();
+      });
+    }
+
+    // Alert Detail Modal Event Handlers
+    if (modalCloseAlertDetail) {
+      modalCloseAlertDetail.addEventListener("click", closeAlertDetailModal);
+    }
+    if (modalBtnCloseAlertDetail) {
+      modalBtnCloseAlertDetail.addEventListener("click", closeAlertDetailModal);
+    }
+    if (btnSaveAlertStatus) {
+      btnSaveAlertStatus.addEventListener("click", saveAlertStatus);
+    }
+    if (btnAddAlertNote) {
+      btnAddAlertNote.addEventListener("click", addAlertNote);
+    }
+    if (modalAlertNewNote) {
+      modalAlertNewNote.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          addAlertNote();
+        }
       });
     }
 

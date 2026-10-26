@@ -426,9 +426,23 @@ class TestDefensiveSocBackend(unittest.TestCase):
         self.assertEqual(actions[0]["action_id"], action_id)
         self.assertEqual(actions[0]["target_ip"], target_ip)
 
-        # Step 6: Agent reports execution status
+        # Step 6: Agent reports execution status with authentic host proof
+        proof = {
+            "action_id": action_id,
+            "target_ip": target_ip,
+            "action_type": "BLOCK_IP",
+            "verified": True,
+            "table": "mini_enterprise",
+            "set": "blocked_ips",
+            "rule": "ip saddr @blocked_ips counter drop",
+            "rule_references_set": True,
+            "elements": [target_ip],
+            "verifier": "host_nftables_query",
+            "timestamp": soc_backend.now()
+        }
         r_status = self.client.post("/api/agent/action-status", headers=agent_headers, json={
-            "action_id": action_id, "status": "EXECUTED", "message": "nftables element added"
+            "action_id": action_id, "status": "EXECUTED", "message": "nftables element added",
+            "evidence": proof
         })
         self.assertEqual(r_status.status_code, 200)
 
@@ -710,9 +724,23 @@ class TestDefensiveSocBackend(unittest.TestCase):
         r_app = self.client.post(f"/api/soc/response-actions/{action_id}/approve", headers=analyst_headers)
         self.assertEqual(r_app.status_code, 200)
 
-        # 4. Agent reports execution
+        # 4. Agent reports execution with authentic host proof
+        proof = {
+            "action_id": action_id,
+            "target_ip": target_ip,
+            "action_type": "BLOCK_IP",
+            "verified": True,
+            "table": "mini_enterprise",
+            "set": "blocked_ips",
+            "rule": "ip saddr @blocked_ips counter drop",
+            "rule_references_set": True,
+            "elements": [target_ip],
+            "verifier": "host_nftables_query",
+            "timestamp": soc_backend.now()
+        }
         r_exec = self.client.post("/api/agent/action-status", headers=agent_headers, json={
-            "action_id": action_id, "status": "EXECUTED", "message": "Firewall rule created"
+            "action_id": action_id, "status": "EXECUTED", "message": "Firewall rule created",
+            "evidence": proof
         })
         self.assertEqual(r_exec.status_code, 200)
 
@@ -1451,6 +1479,9 @@ class TestDefensiveSocBackend(unittest.TestCase):
                 type ipv4_addr
                 elements = {{ {target_ip} }}
             }}
+            chain input {{
+                ip saddr @blocked_ips counter drop
+            }}
         }}
         """
         r_ver = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
@@ -1507,7 +1538,7 @@ class TestDefensiveSocBackend(unittest.TestCase):
 
         # C: Accept authentic proof with matching target IP
         r_valid = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
         self.assertEqual(r_valid.status_code, 200)
         self.assertTrue(r_valid.get_json()["verified"])
@@ -1576,7 +1607,7 @@ class TestDefensiveSocBackend(unittest.TestCase):
 
         # Verify action
         r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
         self.assertTrue(r_v.get_json()["verified"])
 
@@ -2044,7 +2075,7 @@ class TestDefensiveSocBackend(unittest.TestCase):
 
         # Verify containment with authentic host nftables proof
         r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
         self.assertEqual(r_v.get_json()["status"], "VERIFIED")
 
@@ -2133,9 +2164,17 @@ class TestDefensiveSocBackend(unittest.TestCase):
         self.assertFalse(r_ev_dry.get_json()["verified"])
         self.assertIn("DRY_RUN simulation mode", r_ev_dry.get_json()["error"])
 
-        # 5. Accept genuine containment proof
+        # 5. Reject block set without active drop/reject rule referencing the set
+        r_no_rule = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} chain input {{ policy accept; }} }}"
+        })
+        self.assertEqual(r_no_rule.status_code, 200)
+        self.assertFalse(r_no_rule.get_json()["verified"])
+        self.assertIn("no active drop/reject rule references set", r_no_rule.get_json()["error"])
+
+        # 6. Accept genuine containment proof with table, set, and active drop rule referencing set
         r_valid = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
         self.assertEqual(r_valid.status_code, 200)
         self.assertTrue(r_valid.get_json()["verified"])
@@ -2266,7 +2305,7 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
         self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
 
         # Verify with authentic nftables evidence
-        nft_proof = "table inet filter { set blocked_ips { type ipv4_addr; elements = { 198.51.100.10 } } }"
+        nft_proof = "table inet filter { set blocked_ips { type ipv4_addr; elements = { 198.51.100.10 } } chain input { ip saddr @blocked_ips counter drop } }"
         r_v = self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={"evidence": nft_proof})
         self.assertTrue(r_v.get_json()["verified"])
 
@@ -2309,7 +2348,7 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
             self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
             self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
             self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-                "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {ip} }} }} }}"
+                "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
             })
 
         # Ingest 1 alert for SQL_INJECTION (T1190)
@@ -2417,7 +2456,7 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
 
         # Verify action
         self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {shared_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {shared_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
 
         # Check MITRE matrix
@@ -2457,7 +2496,7 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
 
         # Verified
         self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
         r_m1 = self.client.get("/api/soc/mitre-matrix", headers=analyst_h)
         self.assertEqual(r_m1.get_json()["mitigated_techniques"], 1)
@@ -2543,7 +2582,7 @@ class TestPurpleTeamResilienceAndMitreMatrix(TestDefensiveSocBackend):
         self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=analyst_h)
         self.client.post("/api/agent/action-status", headers=agent_h, json={"action_id": aid, "status": "EXECUTED"})
         self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=analyst_h, json={
-            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}"
+            "evidence": f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
         })
 
         # Immediate GET /api/soc/mitre-matrix reflects the change immediately
@@ -2797,7 +2836,7 @@ class TestSoarAttackMitigationsAndRefresh(unittest.TestCase):
         self.assertEqual(r_fail.get_json()["status"], "VERIFICATION_FAILED")
 
         # 2. Valid verification evidence matching target_ip -> VERIFIED
-        valid_ev = "table inet filter {\n    set blocked_ips {\n        type ipv4_addr\n        elements = { 198.51.100.101 }\n    }\n}"
+        valid_ev = "table inet filter {\n    set blocked_ips {\n        type ipv4_addr\n        elements = { 198.51.100.101 }\n    }\n    chain input {\n        ip saddr @blocked_ips counter drop\n    }\n}"
         r_ver = self.client.post(
             "/api/soc/response-actions/101/verify",
             headers=self.headers,
@@ -2920,8 +2959,631 @@ class TestSoarAttackMitigationsAndRefresh(unittest.TestCase):
         self.assertTrue(inc_data["response_policy"]["is_supported"])
 
 
+class TestUnifiedPipelineAndSOCSecurity(unittest.TestCase):
+    """
+    Dedicated test suite for unified detection pipeline, ML integration,
+    alert disposition, rate limiting, and SOC self-protection audit logging.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.test_db_path = str(Path(cls.temp_dir.name) / "test_unified_soc.db")
+        app.config["TESTING"] = True
+        app.config["SOC_DB_PATH"] = cls.test_db_path
+        app.config["SOC_AGENT_TOKEN"] = TEST_AGENT_TOKEN
+        app.config["ANALYST_TOKEN"] = TEST_ANALYST_TOKEN
+        app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 600
+        init_db(cls.test_db_path)
+        cls.client = app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        import gc
+        gc.collect()
+        try:
+            cls.temp_dir.cleanup()
+        except Exception:
+            pass
+
+    def setUp(self):
+        self._orig_env = dict(os.environ)
+        self.agent_headers = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        self.analyst_headers = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+        with db(self.test_db_path) as c:
+            c.execute("DELETE FROM alert_notes")
+            c.execute("DELETE FROM soc_security_events")
+            c.execute("DELETE FROM ingestion_telemetry")
+            c.execute("DELETE FROM incident_notes")
+            c.execute("DELETE FROM alerts")
+            c.execute("DELETE FROM response_actions")
+            c.execute("DELETE FROM incidents")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+        soc_backend.ALLOWED_AGENT_IPS = []
+        soc_backend.ALLOWED_ANALYST_IPS = []
+        app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 600
+
+    def test_01_tri_state_classification_model(self):
+        """Verify known_attack, suspicious_anomaly, and unknown are ingested and stored with appropriate MITRE mappings."""
+        # 1. Known attack: SQL Injection
+        r_known = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.11",
+            "signature": "SQL_INJECTION",
+            "severity": "high",
+            "classification_type": "known_attack",
+            "detection_method": "rule",
+            "confidence": 0.98,
+            "evidence": "UNION SELECT username, password FROM users"
+        })
+        self.assertEqual(r_known.status_code, 202)
+        known_data = r_known.get_json()
+        self.assertEqual(known_data.get("classification_type"), "known_attack")
+        self.assertEqual(known_data.get("mitre_id"), "T1190")
+
+        # 2. Suspicious anomaly: Rate or flow burst
+        r_anomaly = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.12",
+            "signature": "ANOMALOUS_BURST_TRAFFIC",
+            "severity": "medium",
+            "classification_type": "suspicious_anomaly",
+            "detection_method": "statistical_anomaly",
+            "anomaly_score": 0.88,
+            "threshold_value": 0.50,
+            "observed_value": 3.40,
+            "measurement_window_seconds": 60,
+            "evidence": "Request frequency exceeded baseline z-score threshold"
+        })
+        self.assertEqual(r_anomaly.status_code, 202)
+        anomaly_data = r_anomaly.get_json()
+        self.assertEqual(anomaly_data.get("classification_type"), "suspicious_anomaly")
+
+        # 3. Unknown / Out-of-distribution flow
+        r_unknown = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.13",
+            "signature": "OOD_UNKNOWN_FLOW_PATTERN",
+            "severity": "low",
+            "classification_type": "unknown",
+            "detection_method": "ml_model",
+            "confidence": 0.20,
+            "evidence": "Low classification confidence across all trained classes"
+        })
+        self.assertEqual(r_unknown.status_code, 202)
+        unknown_data = r_unknown.get_json()
+        self.assertEqual(unknown_data.get("classification_type"), "unknown")
+        # Unknown should not force an unfounded MITRE attack ID
+        self.assertNotEqual(unknown_data.get("mitre_id"), "T1190")
+
+        # 4. Bare unrecognized signature without classification or anomaly indicators should fail with 400
+        r_invalid = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.14",
+            "signature": "COMPLETELY_UNRECOGNIZED_NOVEL_ATTACK",
+            "severity": "high"
+        })
+        self.assertEqual(r_invalid.status_code, 400)
+        self.assertIn("Unsupported signature", r_invalid.get_json().get("error", ""))
+
+    def test_02_ml_engine_integration_and_ood(self):
+        """Verify modular ML inference engine for both network-flow features and HTTP requests."""
+        # 1. Direct model inference on flow features
+        flow_telemetry = {
+            "source_ip": "192.168.31.250",
+            "destination_ip": "192.168.31.73",
+            "destination_port": 8443,
+            "protocol": "TCP",
+            "flow_duration_ms": 250,
+            "total_fwd_packets": 60,
+            "syn_flag_ratio": 0.95
+        }
+        r_flow = self.client.post("/api/soc/ml/evaluate", headers=self.analyst_headers, json=flow_telemetry)
+        self.assertEqual(r_flow.status_code, 200)
+        res_flow = r_flow.get_json()
+        self.assertEqual(res_flow["feature_schema_version"], "network_flow_v1")
+        self.assertIn(res_flow["model_name"], ["CICIDS2017-FlowAnomaly-v1", "FlowAnomalyGuard-Heuristic"])
+        self.assertIn(res_flow["predicted_category"], ["SYN_FLOOD_OR_PORT_SCAN", "PORT_SCAN"])
+        self.assertGreater(res_flow["confidence"], 0.70)
+
+        # 2. HTTP telemetry evaluation with SQLi payload
+        http_telemetry = {
+            "source_ip": "192.168.31.251",
+            "http_method": "GET",
+            "requested_path": "/api/users?id=1%20UNION%20SELECT%20username,password%20FROM%20accounts"
+        }
+        r_http = self.client.post("/api/soc/ml/evaluate", headers=self.analyst_headers, json=http_telemetry)
+        self.assertEqual(r_http.status_code, 200)
+        res_http = r_http.get_json()
+        self.assertEqual(res_http["feature_schema_version"], "http_request_v1")
+        self.assertEqual(res_http["predicted_category"], "SQL_INJECTION")
+        self.assertEqual(res_http["classification_type"], "known_attack")
+
+        # 3. Unauthenticated ML evaluate should return 401
+        r_unauth = self.client.post("/api/soc/ml/evaluate", json=http_telemetry)
+        self.assertEqual(r_unauth.status_code, 401)
+
+    def test_03_alert_disposition_and_investigation_notes(self):
+        """Verify alert retrieval, inspection, analyst disposition updates, and timestamped audit notes."""
+        # Ingest an alert
+        r_ingest = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.99",
+            "signature": "COMMAND_INJECTION",
+            "severity": "critical",
+            "evidence": "; /bin/cat /etc/passwd"
+        })
+        self.assertEqual(r_ingest.status_code, 202)
+        event_id = r_ingest.get_json()["event_id"]
+
+        # 1. Fetch full alert inspection
+        r_inspect = self.client.get(f"/api/soc/alerts/{event_id}", headers=self.analyst_headers)
+        self.assertEqual(r_inspect.status_code, 200)
+        detail = r_inspect.get_json()["alert"]
+        self.assertEqual(detail["source_ip"], "198.51.100.99")
+        self.assertEqual(detail["signature"], "COMMAND_INJECTION")
+        self.assertEqual(detail["status"], "new")
+
+        # 2. Update alert disposition to 'investigating'
+        r_disp = self.client.post(f"/api/soc/alerts/{event_id}/status", headers=self.analyst_headers, json={
+            "status": "investigating",
+            "rationale": "Analyst investigating process execution telemetry"
+        })
+        self.assertEqual(r_disp.status_code, 200)
+
+        # 3. Add an analyst investigation note
+        r_note = self.client.post(f"/api/soc/alerts/{event_id}/notes", headers=self.analyst_headers, json={
+            "note": "Host isolated and memory dump scheduled"
+        })
+        self.assertEqual(r_note.status_code, 200)
+        notes = r_note.get_json().get("notes", [])
+        self.assertGreaterEqual(len(notes), 2)
+
+        # 4. Check that updated status and notes persist in inspection endpoint
+        r_inspect_updated = self.client.get(f"/api/soc/alerts/{event_id}", headers=self.analyst_headers)
+        self.assertEqual(r_inspect_updated.status_code, 200)
+        updated_alert = r_inspect_updated.get_json()["alert"]
+        self.assertEqual(updated_alert["status"], "investigating")
+        self.assertEqual(updated_alert["analyst_disposition"], "investigating")
+
+    def test_04_multi_dimensional_alert_filtering(self):
+        """Verify multi-dimensional filtering by classification_type, detection_method, and status."""
+        # Ingest two distinct alerts
+        self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "10.0.0.1",
+            "signature": "SQL_INJECTION",
+            "severity": "high",
+            "classification_type": "known_attack",
+            "detection_method": "rule"
+        })
+        r_anom = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "10.0.0.2",
+            "signature": "RATE_ANOMALY",
+            "severity": "medium",
+            "classification_type": "suspicious_anomaly",
+            "detection_method": "statistical_anomaly"
+        })
+        anom_id = r_anom.get_json()["event_id"]
+        # Set status of anomaly
+        self.client.post(f"/api/soc/alerts/{anom_id}/status", headers=self.analyst_headers, json={
+            "status": "confirmed", "rationale": "Verified automated attack tool"
+        })
+
+        # Filter by classification_type
+        r_filter_class = self.client.get("/api/soc/alerts?classification_type=suspicious_anomaly", headers=self.analyst_headers)
+        self.assertEqual(r_filter_class.status_code, 200)
+        alerts_class = r_filter_class.get_json()["alerts"]
+        self.assertTrue(all(a["classification_type"] == "suspicious_anomaly" for a in alerts_class))
+
+        # Filter by status
+        r_filter_status = self.client.get("/api/soc/alerts?status=confirmed", headers=self.analyst_headers)
+        self.assertEqual(r_filter_status.status_code, 200)
+        alerts_status = r_filter_status.get_json()["alerts"]
+        self.assertTrue(all(a["status"] == "confirmed" for a in alerts_status))
+
+    def test_05_rate_limiting_and_security_headers(self):
+        """Verify security headers are applied and excessive request rates return HTTP 429."""
+        # 1. Verify Security Headers
+        resp = self.client.get("/api/soc/mitre-matrix", headers=self.analyst_headers)
+        self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(resp.headers.get("X-Frame-Options"), "SAMEORIGIN")
+        self.assertEqual(resp.headers.get("Referrer-Policy"), "strict-origin-when-cross-origin")
+
+        # 2. Verify Rate Limiting
+        app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 5
+        client_ip = "198.51.100.222"
+        soc_backend.rate_limiter.reset()
+
+        responses = []
+        for _ in range(7):
+            r = self.client.get("/api/soc/mitre-matrix", headers=self.analyst_headers, environ_overrides={"REMOTE_ADDR": client_ip})
+            responses.append(r.status_code)
+
+        self.assertIn(429, responses)
+        app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 600
+
+    def test_06_ip_allowlist_enforcement(self):
+        """Verify IP allowlist restricts unauthorized client IPs."""
+        soc_backend.ALLOWED_AGENT_IPS = ["192.168.31.91"]
+
+        # Authorized IP
+        r_auth = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.33",
+            "signature": "PORT_SCAN",
+            "severity": "medium"
+        }, environ_overrides={"REMOTE_ADDR": "192.168.31.91"})
+        self.assertEqual(r_auth.status_code, 202)
+
+        # Unauthorized IP
+        r_unauth = self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.33",
+            "signature": "PORT_SCAN",
+            "severity": "medium"
+        }, environ_overrides={"REMOTE_ADDR": "198.51.100.199"})
+        self.assertEqual(r_unauth.status_code, 403)
+        self.assertIn("Host IP not authorized", r_unauth.get_json()["error"])
+
+    def test_07_soc_security_events_audit_and_deduplication(self):
+        """Verify SOC self-protection logs failed auth attempts and deduplicates repeated alerts."""
+        # Send 3 unauthorized requests with bad tokens
+        for _ in range(3):
+            self.client.get("/api/soc/incidents", headers={"Authorization": "Bearer bad_token_123"}, environ_overrides={"REMOTE_ADDR": "198.51.100.77"})
+
+        # Query SOC security events as authenticated analyst
+        r_sec = self.client.get("/api/soc/security-events", headers=self.analyst_headers)
+        self.assertEqual(r_sec.status_code, 200)
+        events = r_sec.get_json()["events"]
+        self.assertGreaterEqual(len(events), 1)
+
+        auth_failures = [e for e in events if e["client_ip"] == "198.51.100.77"]
+        self.assertEqual(len(auth_failures), 1)
+        self.assertGreaterEqual(auth_failures[0]["occurrences"], 3)
+
+    def test_08_telemetry_pipeline_health_status(self):
+        """Verify /api/soc/telemetry/status accurately reports ingestion counts and health."""
+        # Ingest 1 known_attack and 1 suspicious_anomaly
+        self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "10.10.10.1",
+            "signature": "SQL_INJECTION",
+            "severity": "high",
+            "classification_type": "known_attack"
+        })
+        self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "10.10.10.2",
+            "signature": "ANOMALY_BURST",
+            "severity": "medium",
+            "classification_type": "suspicious_anomaly"
+        })
+
+        r_telemetry = self.client.get("/api/soc/telemetry/status", headers=self.analyst_headers)
+        self.assertEqual(r_telemetry.status_code, 200)
+        data = r_telemetry.get_json()
+        self.assertEqual(data["pipeline_status"], "Operational")
+        self.assertGreaterEqual(data["classification_counts"]["known_attack"], 1)
+        self.assertGreaterEqual(data["classification_counts"]["suspicious_anomaly"], 1)
+
+
+class TestSocContainmentVerificationRegression(unittest.TestCase):
+    """
+    Focused regression test suite covering all security fixes required by audit:
+    - Rejection of missing, synthetic, mismatched, and unreferenced firewall evidence
+    - Independent host verification logic and unblock verification
+    - Secure action-status API & agent vs analyst privilege separation
+    - SOAR execution mode conflict resolution (dry-run safety)
+    - Management IP protection (preventing lockout of SOC, loopback, remediator)
+    - Pre-auth rate limit isolation
+    - Purple team resilience index integrity (no double-counting, only verified mitigations)
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.test_db_path = str(Path(cls.temp_dir.name) / "test_soc_regression.db")
+        app.config["TESTING"] = True
+        app.config["SOC_DB_PATH"] = cls.test_db_path
+        app.config["SOC_AGENT_TOKEN"] = TEST_AGENT_TOKEN
+        app.config["ANALYST_TOKEN"] = TEST_ANALYST_TOKEN
+        init_db(cls.test_db_path)
+        cls.client = app.test_client()
+        cls.agent_headers = {"Authorization": f"Bearer {TEST_AGENT_TOKEN}"}
+        cls.analyst_headers = {"Authorization": f"Bearer {TEST_ANALYST_TOKEN}"}
+
+    @classmethod
+    def tearDownClass(cls):
+        import gc
+        gc.collect()
+        try:
+            cls.temp_dir.cleanup()
+        except Exception:
+            pass
+
+    def setUp(self):
+        self._orig_env = dict(os.environ)
+        self._orig_config = dict(app.config)
+        with db(self.test_db_path) as c:
+            c.execute("DELETE FROM incident_notes")
+            c.execute("DELETE FROM alerts")
+            c.execute("DELETE FROM response_actions")
+            c.execute("DELETE FROM incidents")
+        soc_backend.rate_limiter.reset()
+        soc_backend.unauth_rate_limiter.reset()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+        app.config.clear()
+        app.config.update(self._orig_config)
+        with db(self.test_db_path) as c:
+            c.execute("DELETE FROM incident_notes")
+            c.execute("DELETE FROM alerts")
+            c.execute("DELETE FROM response_actions")
+            c.execute("DELETE FROM incidents")
+
+    # 1. Verification Evidence Security
+    def test_verif_01_missing_evidence_fails_verification(self):
+        """Missing evidence must fail verification; synthetic strings are never generated."""
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO incidents (incident_id, title, status, source_ip, signature, mitre_id, created_at, updated_at, defense_status)
+                VALUES (501, 'Test Missing', 'NEW', '198.51.100.71', 'PORT_SCAN', 'T1046', ?, ?, 'Detected')
+            """, (soc_backend.now(), soc_backend.now()))
+            c.execute("""
+                INSERT INTO response_actions (action_id, incident_id, target_ip, action_type, status, triggered_by, created_at)
+                VALUES (501, 501, '198.51.100.71', 'BLOCK_IP', 'EXECUTED', 'SOC_ANALYST', ?)
+            """, (soc_backend.now(),))
+
+        r_ver = self.client.post("/api/soc/response-actions/501/verify", headers=self.analyst_headers, json={})
+        self.assertEqual(r_ver.status_code, 200)
+        self.assertFalse(r_ver.get_json()["verified"])
+        self.assertEqual(r_ver.get_json()["status"], "VERIFICATION_FAILED")
+        self.assertIn("missing verification evidence", r_ver.get_json()["error"])
+
+    def test_verif_02_synthetic_evidence_fails_verification(self):
+        """Fabricated or simulated evidence strings must fail verification."""
+        action = {"action_id": 502, "target_ip": "198.51.100.72", "action_type": "BLOCK_IP", "status": "EXECUTED"}
+        synthetic_samples = [
+            "[DRY_RUN] Simulated containment: would block 198.51.100.72",
+            "table inet filter { set blocked_ips { elements = { 198.51.100.72 } } } [dry run]",
+            "synthetic mock_verification without nftables kernel enforcement 198.51.100.72"
+        ]
+        for s in synthetic_samples:
+            ok, reason, _ = soc_backend.validate_verification_evidence(action, {"evidence": s})
+            self.assertFalse(ok, f"Synthetic evidence must be rejected: {s}")
+
+    def test_verif_03_wrong_target_ip_fails_verification(self):
+        """Evidence referencing an IP other than the action target must fail verification."""
+        action = {"action_id": 503, "target_ip": "198.51.100.73", "action_type": "BLOCK_IP", "status": "EXECUTED"}
+        mismatched_ev = {
+            "target_ip": "10.0.0.99",
+            "rule": "table inet filter { set blocked_ips { elements = { 10.0.0.99 } } chain input { ip saddr @blocked_ips counter drop } }"
+        }
+        ok, reason, _ = soc_backend.validate_verification_evidence(action, mismatched_ev)
+        self.assertFalse(ok)
+        self.assertTrue("does not match" in reason or "do not contain" in reason)
+
+    def test_verif_04_wrong_action_id_fails_verification(self):
+        """Evidence tied to a mismatched action ID must be rejected."""
+        action = {"action_id": 504, "target_ip": "198.51.100.74", "action_type": "BLOCK_IP", "status": "EXECUTED"}
+        mismatched_aid = {
+            "action_id": 9999,
+            "target_ip": "198.51.100.74",
+            "rule": "table inet filter { set blocked_ips { elements = { 198.51.100.74 } } chain input { ip saddr @blocked_ips counter drop } }",
+            "rule_references_set": True
+        }
+        ok, reason, _ = soc_backend.validate_verification_evidence(action, mismatched_aid)
+        self.assertFalse(ok)
+        self.assertIn("does not match action #504", reason)
+
+    def test_verif_05_set_without_active_drop_rule_fails_verification(self):
+        """Merely finding an IP in a set without an active drop/reject rule referencing the set is rejected."""
+        action = {"action_id": 505, "target_ip": "198.51.100.75", "action_type": "BLOCK_IP", "status": "EXECUTED"}
+        evidence_no_rule = "table inet filter { set blocked_ips { type ipv4_addr; elements = { 198.51.100.75 } } chain input { policy accept; } }"
+        ok, reason, _ = soc_backend.validate_verification_evidence(action, {"evidence": evidence_no_rule})
+        self.assertFalse(ok)
+        self.assertIn("no active drop/reject rule references set", reason)
+
+    def test_verif_06_unblock_rejected_when_target_still_blocked(self):
+        """Unblock verification fails if IP is still in the set or blocked by another active rule."""
+        action = {"action_id": 506, "target_ip": "198.51.100.76", "action_type": "UNBLOCK_IP", "status": "EXECUTED"}
+        # Case A: IP still in set
+        ev_still_in_set = {
+            "action_type": "UNBLOCK_IP",
+            "elements": ["198.51.100.76"]
+        }
+        ok_a, reason_a, _ = soc_backend.validate_verification_evidence(action, ev_still_in_set)
+        self.assertFalse(ok_a)
+        self.assertIn("still present in block set", reason_a)
+
+        # Case B: Another rule still blocks target
+        ev_other_rule = {
+            "action_type": "UNBLOCK_IP",
+            "other_blocking_rules": True
+        }
+        ok_b, reason_b, _ = soc_backend.validate_verification_evidence(action, ev_other_rule)
+        self.assertFalse(ok_b)
+        self.assertIn("another active firewall rule still blocks", reason_b)
+
+    def test_verif_07_unblock_verified_when_unblock_condition_satisfied(self):
+        """Unblock verification succeeds when target is confirmed absent from set and not blocked."""
+        action = {"action_id": 507, "target_ip": "198.51.100.77", "action_type": "UNBLOCK_IP", "status": "EXECUTED"}
+        valid_unblock = {
+            "action_type": "UNBLOCK_IP",
+            "target_ip": "198.51.100.77",
+            "elements": [],
+            "other_blocking_rules": False,
+            "verifier": "host_nftables_query"
+        }
+        ok, summary, ev_dict = soc_backend.validate_verification_evidence(action, valid_unblock)
+        self.assertTrue(ok)
+        self.assertTrue(ev_dict["verified"])
+
+    # 2. SOAR Execution Modes & Conflict Resolution
+    def test_soar_01_conflict_resolution_fails_safely_to_dry_run(self):
+        """If SOAR_ENFORCEMENT_MODE=true and SOAR_DRY_RUN=true conflict, default safely to DRY_RUN."""
+        app.config["SOAR_ENFORCEMENT_MODE"] = "true"
+        app.config["SOAR_DRY_RUN"] = "true"
+        self.assertTrue(soc_backend.is_soar_dry_run(), "Conflict must fail safely to DRY_RUN")
+        self.assertEqual(soc_backend.get_soar_mode(), "DRY-RUN")
+
+    def test_soar_02_real_enforcement_requires_explicit_disabled_dry_run(self):
+        """Real enforcement is active only when enforcement is true and dry-run is explicitly disabled."""
+        app.config["SOAR_ENFORCEMENT_MODE"] = "true"
+        app.config["SOAR_DRY_RUN"] = "false"
+        self.assertFalse(soc_backend.is_soar_dry_run(), "Enforcement true and dry_run false must enable enforcement")
+        self.assertEqual(soc_backend.get_soar_mode(), "ENFORCEMENT")
+
+    def test_soar_03_dry_run_action_cannot_be_verified(self):
+        """An action executed in DRY_RUN status cannot be marked VERIFIED."""
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO incidents (incident_id, title, status, source_ip, signature, mitre_id, created_at, updated_at, defense_status)
+                VALUES (508, 'Test Dry Run', 'NEW', '198.51.100.78', 'PORT_SCAN', 'T1046', ?, ?, 'Detected')
+            """, (soc_backend.now(), soc_backend.now()))
+            c.execute("""
+                INSERT INTO response_actions (action_id, incident_id, target_ip, action_type, status, triggered_by, created_at)
+                VALUES (508, 508, '198.51.100.78', 'BLOCK_IP', 'DRY_RUN', 'SOC_ANALYST', ?)
+            """, (soc_backend.now(),))
+
+        proof = "table inet filter { set blocked_ips { elements = { 198.51.100.78 } } chain input { ip saddr @blocked_ips counter drop } }"
+        r_ver = self.client.post("/api/soc/response-actions/508/verify", headers=self.analyst_headers, json={"evidence": proof})
+        self.assertEqual(r_ver.status_code, 200)
+        self.assertFalse(r_ver.get_json()["verified"])
+        self.assertEqual(r_ver.get_json()["status"], "VERIFICATION_FAILED")
+        self.assertIn("DRY_RUN simulation mode", r_ver.get_json()["error"])
+
+    # 3. Management System Protection
+    def test_mgmt_01_prohibited_and_management_ips_rejected(self):
+        """Loopback, multicast, unspecified, link-local, and configured management IPs are rejected."""
+        prohibited = [
+            "127.0.0.1", "127.0.0.2", "0.0.0.0", "224.0.0.1", "169.254.1.1", "240.0.0.1"
+        ]
+        for ip in prohibited:
+            self.assertTrue(soc_backend.is_management_ip(ip), f"{ip} must be identified as management/prohibited")
+            with self.assertRaises(ValueError):
+                soc_backend.valid_ip(ip)
+
+    def test_mgmt_02_protected_networks_env_var(self):
+        """Configured PROTECTED_IPS CIDR ranges are protected from blocking."""
+        app.config["PROTECTED_IPS"] = "10.50.0.0/16, 192.168.100.5"
+        self.assertTrue(soc_backend.is_management_ip("10.50.1.20"))
+        self.assertTrue(soc_backend.is_management_ip("192.168.100.5"))
+        self.assertFalse(soc_backend.is_management_ip("198.51.100.80"))
+
+    # 4. Action API Security & Privilege Separation
+    def test_api_01_agent_cannot_mark_action_verified(self):
+        """Remediator agent cannot directly submit status=VERIFIED via action-status."""
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO response_actions (action_id, target_ip, action_type, status, triggered_by, created_at)
+                VALUES (509, '198.51.100.79', 'BLOCK_IP', 'APPROVED', 'SOC_ANALYST', ?)
+            """, (soc_backend.now(),))
+
+        r = self.client.post("/api/agent/action-status", headers=self.agent_headers, json={
+            "action_id": 509, "status": "VERIFIED"
+        })
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Agent cannot directly mark action as VERIFIED", r.get_json()["error"])
+
+    def test_api_02_target_ip_mismatch_in_agent_report_rejected(self):
+        """Agent cannot report status for a target IP different from the action record."""
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO response_actions (action_id, target_ip, action_type, status, triggered_by, created_at)
+                VALUES (510, '198.51.100.80', 'BLOCK_IP', 'APPROVED', 'SOC_ANALYST', ?)
+            """, (soc_backend.now(),))
+
+        r = self.client.post("/api/agent/action-status", headers=self.agent_headers, json={
+            "action_id": 510, "status": "EXECUTED", "target_ip": "10.0.0.1"
+        })
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Target IP mismatch", r.get_json()["error"])
+
+    def test_api_03_unauthenticated_requests_do_not_exhaust_agent_rate_limit(self):
+        """Unauthenticated requests with bad tokens do not consume authenticated rate limit quota."""
+        app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 5
+        client_ip = "198.51.100.150"
+
+        # 6 unauthenticated requests from this IP
+        for _ in range(6):
+            r_bad = self.client.get("/api/agent/pending-actions", headers={"Authorization": "Bearer bad_token"}, environ_overrides={"REMOTE_ADDR": client_ip})
+            self.assertEqual(r_bad.status_code, 401)
+
+        # Authenticated agent from the same IP must STILL succeed and not be blocked by 429!
+        r_good = self.client.get("/api/agent/pending-actions", headers=self.agent_headers, environ_overrides={"REMOTE_ADDR": client_ip})
+        self.assertEqual(r_good.status_code, 200, "Authenticated request must not be throttled by prior unauthenticated requests")
+
+    def test_api_04_agent_evidence_submission_endpoint(self):
+        """Remediator can submit structured verification evidence to /api/agent/response-actions/<aid>/evidence."""
+        with db(self.test_db_path) as c:
+            c.execute("""
+                INSERT INTO response_actions (action_id, target_ip, action_type, status, triggered_by, created_at)
+                VALUES (511, '198.51.100.81', 'BLOCK_IP', 'APPROVED', 'SOC_ANALYST', ?)
+            """, (soc_backend.now(),))
+
+        ev_data = {
+            "action_id": 511,
+            "target_ip": "198.51.100.81",
+            "action_type": "BLOCK_IP",
+            "verified": True,
+            "rule": "ip saddr @blocked_ips counter drop",
+            "rule_references_set": True,
+            "elements": ["198.51.100.81"]
+        }
+        r = self.client.post("/api/agent/response-actions/511/evidence", headers=self.agent_headers, json=ev_data)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "accepted")
+
+    # 5. MITRE Matrix and Resilience Index Calculation
+    def test_matrix_01_resilience_counts_only_verified_mitigations(self):
+        """Executed or unverified actions do NOT increase mitigated techniques or resilience index."""
+        # Ingest 2 distinct attacks
+        self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.82", "signature": "PORT_SCAN", "severity": "medium"
+        })
+        self.client.post("/api/events", headers=self.agent_headers, json={
+            "source_ip": "198.51.100.83", "signature": "DIR_FUZZ", "severity": "medium"
+        })
+
+        # Queue and execute action for PORT_SCAN (status = EXECUTED, not yet verified)
+        r_b = self.client.post("/api/soc/mitigate/block", headers=self.analyst_headers, json={"target_ip": "198.51.100.82"})
+        aid = r_b.get_json()["action_id"]
+        self.client.post(f"/api/soc/response-actions/{aid}/approve", headers=self.analyst_headers)
+        self.client.post("/api/agent/action-status", headers=self.agent_headers, json={"action_id": aid, "status": "EXECUTED"})
+
+        # Resilience index must still be 0.0% because EXECUTED is not VERIFIED
+        r_mat1 = self.client.get("/api/soc/mitre-matrix", headers=self.analyst_headers)
+        data1 = r_mat1.get_json()
+        self.assertEqual(data1["detected_techniques"], 2)
+        self.assertEqual(data1["mitigated_techniques"], 0)
+        self.assertEqual(data1["resilience_index"], 0.0)
+
+        # Now verify with authentic evidence
+        proof = f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ 198.51.100.82 }} }} chain input {{ ip saddr @blocked_ips counter drop }} }}"
+        self.client.post(f"/api/soc/response-actions/{aid}/verify", headers=self.analyst_headers, json={"evidence": proof})
+
+        # Now resilience index is 50.0% (1/2)
+        r_mat2 = self.client.get("/api/soc/mitre-matrix", headers=self.analyst_headers)
+        data2 = r_mat2.get_json()
+        self.assertEqual(data2["detected_techniques"], 2)
+        self.assertEqual(data2["mitigated_techniques"], 1)
+        self.assertEqual(data2["resilience_index"], 50.0)
+
+    def test_matrix_02_all_six_attack_mappings_preserved(self):
+        """All 6 core attacks retain canonical MITRE ATT&CK mappings and response support status."""
+        expected_mappings = {
+            "PORT_SCAN": ("T1046", True),
+            "DIR_FUZZ": ("T1083", True),
+            "PATH_TRAVERSAL": ("T1083", False),
+            "SQL_INJECTION": ("T1190", False),
+            "BRUTE_FORCE_AUTH": ("T1110", False),
+            "COMMAND_INJECTION": ("T1059", False),
+        }
+        for sig, (exp_tid, exp_supp) in expected_mappings.items():
+            reg_entry = soc_backend.REGISTRY.get(sig)
+            self.assertIsNotNone(reg_entry, f"{sig} must exist in REGISTRY")
+            self.assertEqual(reg_entry[0], exp_tid, f"{sig} technique_id must match {exp_tid}")
+            policy = soc_backend.get_response_policy(sig)
+            self.assertEqual(policy["is_supported"], exp_supp, f"{sig} is_supported must be {exp_supp}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

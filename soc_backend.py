@@ -1,11 +1,17 @@
 """Starter Flask SOC API with SQLite, response actions, MITRE aggregation, and Incident Investigation."""
-import ipaddress, json, os, secrets, sqlite3, threading, time
+import ipaddress, json, math, os, re, secrets, sqlite3, threading, time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List, Set
 from flask import Flask, jsonify, request, render_template
+
+try:
+    from soc_ml_engine import ml_engine, MLInferenceResult
+except ImportError:
+    ml_engine = None
+    MLInferenceResult = None
 
 def _load_env_file():
     """Load environment variables from project root .env file if present."""
@@ -40,6 +46,107 @@ _load_env_file()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SOC_RATE_LIMIT_ENABLED"] = True
+app.config["SOC_RATE_LIMIT_PER_MINUTE"] = 600
+
+# ---------------------------------------------------------------------------
+# Rate Limiting & Host IP Allowlist Security Controls
+# ---------------------------------------------------------------------------
+
+class TokenBucketRateLimiter:
+    """Thread-safe sliding-window rate limiter per client IP."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._requests: Dict[str, List[float]] = {}
+        self._window = 60.0
+
+    def is_allowed(self, client_ip: str, limit: int = 120) -> Tuple[bool, int, float]:
+        if not app.config.get("SOC_RATE_LIMIT_ENABLED", True):
+            return True, 0, 0.0
+        now_ts = time.time()
+        cutoff = now_ts - self._window
+        with self._lock:
+            history = self._requests.get(client_ip, [])
+            valid = [t for t in history if t >= cutoff]
+            if len(valid) >= limit:
+                oldest = valid[0]
+                retry_after = max(1.0, math.ceil((oldest + self._window) - now_ts))
+                self._requests[client_ip] = valid
+                return False, len(valid), retry_after
+            valid.append(now_ts)
+            self._requests[client_ip] = valid
+            if len(self._requests) > 1000:
+                self._requests = {ip: h for ip, h in self._requests.items() if h and h[-1] >= cutoff}
+            return True, len(valid), 0.0
+
+    def reset(self):
+        with self._lock:
+            self._requests.clear()
+
+rate_limiter = TokenBucketRateLimiter()
+unauth_rate_limiter = TokenBucketRateLimiter()
+
+ALLOWED_AGENT_IPS = []
+ALLOWED_ANALYST_IPS = []
+
+def is_ip_allowed(client_ip: str, role: str) -> bool:
+    """
+    Check if client IP is permitted by role-specific allowlist.
+
+    Allowlist Semantics:
+    - An empty or unconfigured allowlist (the default) indicates unrestricted source IP access
+      for that role. This behavior is intentionally retained for flexible deployments, but
+      token authentication remains strictly required on all protected endpoints.
+    - Explicit configuration:
+      ALLOWED_AGENT_IPS: Comma-separated string or list of permitted agent IPs/CIDRs.
+      ALLOWED_ANALYST_IPS: Comma-separated string or list of permitted analyst IPs/CIDRs.
+    - Loopback access (127.0.0.1, ::1) is permitted only if SOC_ALLOW_LOOPBACK is enabled (default: true).
+    """
+    var_name = "ALLOWED_AGENT_IPS" if role == "agent" else "ALLOWED_ANALYST_IPS"
+    allowlist_raw = app.config.get(var_name) or globals().get(var_name) or os.getenv(var_name, "")
+    if not allowlist_raw:
+        return True
+    if isinstance(allowlist_raw, (list, tuple, set)):
+        items = [str(x).strip() for x in allowlist_raw if str(x).strip()]
+    else:
+        items = [x.strip() for x in str(allowlist_raw).split(",") if x.strip()]
+    if not items:
+        return True
+    try:
+        ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+
+    allow_loopback = str(app.config.get("SOC_ALLOW_LOOPBACK") or os.getenv("SOC_ALLOW_LOOPBACK", "true")).lower().strip() in ("true", "1", "yes")
+    if ip.is_loopback:
+        return allow_loopback
+
+    for item in items:
+        try:
+            if "/" in item:
+                if ip in ipaddress.ip_network(item, strict=False):
+                    return True
+            else:
+                if ip == ipaddress.ip_address(item):
+                    return True
+        except ValueError:
+            continue
+    return False
+
+@app.after_request
+def apply_security_headers(response):
+    """Enforce defensive HTTP security headers on all responses."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; "
+        "img-src 'self' data:; connect-src 'self'"
+    )
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 def get_db_path():
     """Return resolved absolute path to the SQLite telemetry database."""
@@ -103,27 +210,32 @@ def get_dir_fuzz_window() -> int:
 def is_soar_dry_run() -> bool:
     """
     Check if SOAR operates in dry-run simulation mode (safe default: True).
-    Real enforcement is only active when explicitly configured via SOAR_ENFORCEMENT_MODE=true
-    or SOAR_DRY_RUN=false.
+    Real enforcement requires explicit, deliberate configuration:
+    SOAR_ENFORCEMENT_MODE must be enabled AND SOAR_DRY_RUN must be explicitly disabled ('false', '0', 'disabled', 'no').
+    If enforcement and dry-run settings conflict (both enabled), fail safely to DRY-RUN mode.
     """
-    # 1. Check explicit enforcement mode configuration
-    if "SOAR_ENFORCEMENT_MODE" in app.config and app.config["SOAR_ENFORCEMENT_MODE"] is not None:
-        val = str(app.config["SOAR_ENFORCEMENT_MODE"]).lower().strip()
-        if val in ("true", "1", "enabled", "enforce", "enforcing"):
-            return False
-        if val in ("false", "0", "disabled"):
-            return True
-    enforce_env = os.getenv("SOAR_ENFORCEMENT_MODE", "").lower().strip()
-    if enforce_env in ("true", "1", "enabled", "enforce", "enforcing"):
+    enforce_cfg = app.config.get("SOAR_ENFORCEMENT_MODE")
+    if enforce_cfg is None:
+        enforce_cfg = os.getenv("SOAR_ENFORCEMENT_MODE", "")
+    enforce_val = str(enforce_cfg).lower().strip()
+    enforce_enabled = enforce_val in ("true", "1", "enabled", "enforce", "enforcing", "yes")
+
+    dry_cfg = app.config.get("SOAR_DRY_RUN")
+    if dry_cfg is None:
+        dry_cfg = os.getenv("SOAR_DRY_RUN", "")
+    dry_val = str(dry_cfg).lower().strip()
+    dry_disabled = dry_val in ("false", "0", "disabled", "no")
+
+    if enforce_enabled and dry_disabled:
         return False
 
-    # 2. Check SOAR_DRY_RUN configuration (safe default: True)
-    if "SOAR_DRY_RUN" in app.config and app.config["SOAR_DRY_RUN"] is not None:
-        val = str(app.config["SOAR_DRY_RUN"]).lower().strip()
-        return val not in ("false", "0", "disabled", "no")
+    if enforce_enabled and not dry_disabled:
+        app.logger.warning(
+            "SOAR configuration conflict: SOAR_ENFORCEMENT_MODE is enabled but SOAR_DRY_RUN is not explicitly disabled. "
+            "Failing safely to DRY-RUN mode."
+        )
 
-    val = os.getenv("SOAR_DRY_RUN", "true").lower().strip()
-    return val not in ("false", "0", "disabled", "no")
+    return True
 
 def get_soar_mode() -> str:
     """Return 'DRY-RUN' or 'ENFORCEMENT'."""
@@ -710,27 +822,47 @@ def validate_verification_evidence(action: Dict[str, Any], evidence_data: Option
     """
     Validate verification evidence for a containment response action.
     Returns: (is_valid: bool, reason_or_summary: str, structured_evidence: dict)
-    Enforces rules:
-    - Verification is NEVER inferred from HTTP status codes alone.
-    - Dry-run actions must NOT be fabricated as verified real containment without authentic host firewall evidence.
-    - Negative indicators ('not found', 'error', 'failed', 'absent', 'table not found') cause verification failure.
-    - Target IP in evidence must match action target IP.
-    - Do not treat arbitrary text or merely finding the target IP in a firewall ruleset as proof that traffic is blocked.
+
+    Strict Verification Invariants:
+    - Never generate, assume, or fabricate firewall evidence.
+    - Missing, malformed, stale, or insufficient evidence must fail verification.
+    - An action must not become VERIFIED merely because its status says EXECUTED or MITIGATION_APPLIED.
+    - Separate action execution status from independently verified mitigation status.
+    - Require evidence that is tied to the correct action ID, target IP, action type, and verification time.
+    - Reject mismatched targets or unrelated firewall output.
+    - A string containing 'table inet', 'set blocked_ips', 'drop', or 'reject' is not sufficient proof on its own.
+      Verification must establish that the intended set exists in the live nftables ruleset and that an active
+      rule actually references that set (e.g. 'ip saddr @blocked_ips counter drop').
+    - For UNBLOCK_IP: Confirm target IP is absent from block set and no other active rule still blocks it.
     """
-    target_ip = action.get("target_ip", "")
-    current_status = action.get("status", "")
+    target_ip = str(action.get("target_ip", "")).strip()
+    current_status = str(action.get("status", "")).strip()
+    action_id = action.get("action_id")
+    action_type = str(action.get("action_type") or "BLOCK_IP").upper().strip()
 
     if current_status in ("PENDING", "FAILED", "CANCELLED"):
-        return False, f"Cannot verify action #{action.get('action_id')} in '{current_status}' state (must be approved and executed)", {}
+        return False, f"Cannot verify action #{action_id} in '{current_status}' state (must be approved and executed)", {}
 
     evidence_dict: Dict[str, Any] = {}
     evidence_str = ""
 
-    if evidence_data is None:
-        evidence_data = {}
+    # 1. Parse incoming evidence or retrieve stored evidence without synthetic fallbacks
+    raw_ev = evidence_data
+    if (raw_ev is None or raw_ev == {} or raw_ev == "") and action.get("verification_evidence"):
+        stored = action.get("verification_evidence")
+        if isinstance(stored, str):
+            try:
+                raw_ev = json.loads(stored)
+            except Exception:
+                raw_ev = stored
+        else:
+            raw_ev = stored
 
-    if isinstance(evidence_data, dict):
-        evidence_dict = dict(evidence_data)
+    if raw_ev is None or raw_ev == {} or raw_ev == "":
+        return False, "Verification failed: missing verification evidence. Authentic host firewall proof is required.", {}
+
+    if isinstance(raw_ev, dict):
+        evidence_dict = dict(raw_ev)
         if evidence_dict.get("verified") is False or evidence_dict.get("success") is False:
             reason = evidence_dict.get("reason") or evidence_dict.get("error") or "Verifier reported explicit verification failure"
             return False, f"Verification failed: {reason}", evidence_dict
@@ -740,26 +872,43 @@ def validate_verification_evidence(action: Dict[str, Any], evidence_data: Option
             or evidence_dict.get("evidence")
             or evidence_dict.get("rule")
             or evidence_dict.get("detail")
+            or evidence_dict.get("details")
             or ""
         ).strip()
-
-        ev_ip = evidence_dict.get("target_ip") or evidence_dict.get("ip")
-        if ev_ip and str(ev_ip).strip() != target_ip:
-            return False, f"Verification failed: evidence target IP '{ev_ip}' does not match action target IP '{target_ip}'", evidence_dict
-    elif isinstance(evidence_data, str):
-        evidence_str = evidence_data.strip()
-        evidence_dict = {"raw_evidence": evidence_str}
-
-    # If no evidence was explicitly provided (e.g. from existing test suites or API calls without body)
-    # on an executed action, use confirmed host nftables proof
-    if not evidence_str:
-        if current_status in ("EXECUTED", "MITIGATION_APPLIED"):
-            evidence_str = str(action.get("verification_evidence") or f"table inet filter {{ set blocked_ips {{ type ipv4_addr; elements = {{ {target_ip} }} }} }}").strip()
-            evidence_dict = {"rule": evidence_str, "verifier": "host_nftables_query"}
+    elif isinstance(raw_ev, str):
+        trimmed = raw_ev.strip()
+        if trimmed.startswith("{") and trimmed.endswith("}"):
+            try:
+                parsed = json.loads(trimmed)
+                if isinstance(parsed, dict):
+                    evidence_dict = dict(parsed)
+                    if evidence_dict.get("verified") is False or evidence_dict.get("success") is False:
+                        reason = evidence_dict.get("reason") or evidence_dict.get("error") or "Verifier reported explicit verification failure"
+                        return False, f"Verification failed: {reason}", evidence_dict
+                    evidence_str = str(
+                        evidence_dict.get("output")
+                        or evidence_dict.get("evidence")
+                        or evidence_dict.get("rule")
+                        or evidence_dict.get("detail")
+                        or evidence_dict.get("details")
+                        or ""
+                    ).strip()
+                else:
+                    evidence_str = trimmed
+                    evidence_dict = {"raw_evidence": evidence_str}
+            except Exception:
+                evidence_str = trimmed
+                evidence_dict = {"raw_evidence": evidence_str}
         else:
-            return False, "Verification failed: no verification evidence provided.", evidence_dict
+            evidence_str = trimmed
+            evidence_dict = {"raw_evidence": evidence_str}
+    else:
+        return False, "Verification failed: invalid evidence format (must be dict or string).", {}
 
-    # 1. Reject DRY_RUN or simulated/dry-run evidence notes without authentic kernel nftables proof
+    if not evidence_str and not evidence_dict:
+        return False, "Verification failed: empty verification evidence.", evidence_dict
+
+    # 2. Reject DRY_RUN or simulated/dry-run evidence notes without authentic kernel nftables proof
     action_msg = str(action.get("message") or "").strip().lower()
     is_dry_run_action = (
         current_status == "DRY_RUN"
@@ -769,44 +918,121 @@ def validate_verification_evidence(action: Dict[str, Any], evidence_data: Option
     if is_dry_run_action:
         return False, "Verification rejected: action was executed in DRY_RUN simulation mode. Simulated actions cannot be verified as active host-firewall containment without authentic kernel enforcement.", evidence_dict
 
-    if any(k in evidence_str.lower() for k in ("dry_run", "dry-run", "dry run", "simulat", "without nftables", "no actual firewall")):
+    combined_text = (evidence_str + " " + str(evidence_dict)).lower()
+    if any(k in combined_text for k in ("dry_run", "dry-run", "dry run", "simulat", "without nftables", "no actual firewall", "mock_verification", "fake_evidence")):
         return False, "Verification failed: evidence indicates DRY_RUN simulation mode; no actual firewall rule was added to host nftables.", evidence_dict
 
-    lower_ev = evidence_str.lower()
     failure_indicators = [
         "not found", "no such element", "table not found", "set not found",
-        "error:", "failed", "does not exist", "absent", "connection refused",
-        "could not inspect", "verification failed", "without nftables", "no actual firewall"
+        "error:", "does not exist", "absent", "connection refused",
+        "could not inspect", "without nftables", "no actual firewall"
     ]
     for ind in failure_indicators:
-        if ind in lower_ev and not any(pos in lower_ev for pos in ("verified successfully", "element found", "confirmed")):
+        if ind in combined_text and not any(pos in combined_text for pos in ("verified successfully", "element found", "confirmed", "absent from set")):
             return False, f"Verification failed: evidence contains error/absence indicator ('{ind}'): {evidence_str[:200]}", evidence_dict
 
-    # 3. Check target IP match
+    # 3. Action ID correlation
+    ev_aid = evidence_dict.get("action_id") or evidence_dict.get("id")
+    if ev_aid is not None and str(ev_aid).strip() != str(action_id).strip():
+        return False, f"Verification failed: evidence action ID '{ev_aid}' does not match action #{action_id}", evidence_dict
+
+    # 4. Action Type correlation
+    ev_kind = evidence_dict.get("action_type") or evidence_dict.get("type")
+    if ev_kind and str(ev_kind).upper().strip() != action_type:
+        return False, f"Verification failed: evidence action type '{ev_kind}' does not match action type '{action_type}'", evidence_dict
+
+    # 5. Target IP validation and correlation
+    try:
+        valid_ip(target_ip)
+    except Exception as e:
+        return False, f"Verification failed: action target IP '{target_ip}' is invalid: {str(e)}", evidence_dict
+
+    ev_ip = evidence_dict.get("target_ip") or evidence_dict.get("ip")
+    if ev_ip and str(ev_ip).strip() != target_ip:
+        return False, f"Verification failed: evidence target IP '{ev_ip}' does not match action target IP '{target_ip}'", evidence_dict
+
+    # 6. Timestamp verification
+    ev_ts = evidence_dict.get("timestamp") or evidence_dict.get("verified_at")
+    if ev_ts:
+        try:
+            ts_val = parse_iso_ts(ev_ts) if isinstance(ev_ts, str) else float(ev_ts)
+            now_ts = time.time()
+            if ts_val > (now_ts + 300):
+                return False, f"Verification failed: evidence timestamp is in the future ({ev_ts})", evidence_dict
+            if (now_ts - ts_val) > 86400 * 7:
+                return False, f"Verification failed: evidence timestamp is stale ({ev_ts})", evidence_dict
+        except Exception:
+            pass
+
     import re
+    lower_ev = evidence_str.lower()
     found_ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", evidence_str)
-    if not found_ips or target_ip not in found_ips:
-        return False, f"Verification failed: evidence IP(s) {found_ips} do not contain expected target IP '{target_ip}'", evidence_dict
 
-    # 4. Strict firewall proof validation:
-    # Do not treat arbitrary text or merely finding the target IP in a firewall ruleset as proof that traffic is blocked.
-    firewall_syntax_keywords = (
-        "table inet", "table ip", "set blocked_ips", "chain input", "chain forward",
-        "chain prerouting", "nftables", "nft ", "iptables", "type ipv4_addr",
-        "elements =", "ip saddr", "ip daddr"
-    )
-    if not any(kw in lower_ev for kw in firewall_syntax_keywords):
-        return False, "Verification failed: evidence is arbitrary text without valid firewall/nftables syntax.", evidence_dict
+    # 7. Action Type Specific Verification
+    if action_type == "BLOCK_IP":
+        elements_list = [str(x) for x in evidence_dict.get("elements", [])]
+        if target_ip not in found_ips and target_ip not in elements_list:
+            return False, f"Verification failed: evidence IP(s) {found_ips} do not contain expected target IP '{target_ip}' (target IP does not match)", evidence_dict
 
-    # Must demonstrate active containment/blocking semantics (drop, reject, set blocked_ips)
-    # Reject non-blocking or allow rules (e.g. 'accept' without drop)
-    blocking_keywords = ("set blocked_ips", "drop", "reject", "deny", "blackhole", "unreachable")
-    if not any(bk in lower_ev for bk in blocking_keywords) or ("accept" in lower_ev and "drop" not in lower_ev and "set blocked_ips" not in lower_ev):
-        return False, "Verification failed: evidence does not demonstrate an active drop/reject rule or containment set for target IP (merely finding IP in a ruleset is not proof of blocking).", evidence_dict
+        # Confirm intended nftables table and set exist
+        firewall_syntax_keywords = (
+            "table inet", "table ip", "set blocked_ips", "chain input", "chain forward",
+            "type ipv4_addr", "elements =", "ip saddr", "ip daddr"
+        )
+        has_syntax = any(kw in lower_ev for kw in firewall_syntax_keywords) or (
+            evidence_dict.get("table") and evidence_dict.get("set")
+        )
+        if not has_syntax:
+            return False, "Verification failed: evidence is arbitrary text without valid firewall/nftables syntax.", evidence_dict
 
-    summary = evidence_str or f"Host nftables rule confirmed for target {target_ip} in table inet mini_enterprise set blocked_ips"
+        # Reject non-blocking rules (e.g. accept without drop/reject)
+        if "accept" in lower_ev and "drop" not in lower_ev and "reject" not in lower_ev and not evidence_dict.get("rule_references_set"):
+            return False, "Verification failed: evidence does not demonstrate an active drop/reject rule; no active drop/reject rule references set @blocked_ips (accept rule found).", evidence_dict
+
+        # Confirm an active firewall rule references the set and applies intended drop/reject behavior
+        rule_str = str(evidence_dict.get("rule") or "").lower()
+        has_set_ref = (
+            evidence_dict.get("rule_references_set") is True
+            or bool(re.search(r"@(?:blocked_ips|[a-zA-Z0-9_\-]+)\s+(?:counter\s+)?(?:drop|reject)", lower_ev))
+            or bool(re.search(r"ip\s+saddr\s+@(?:blocked_ips|[a-zA-Z0-9_\-]+).*?(?:drop|reject)", lower_ev))
+            or bool(re.search(r"@(?:blocked_ips|[a-zA-Z0-9_\-]+)\s+(?:counter\s+)?(?:drop|reject)", rule_str))
+            or bool(re.search(r"ip\s+saddr\s+@(?:blocked_ips|[a-zA-Z0-9_\-]+).*?(?:drop|reject)", rule_str))
+        )
+
+        if not has_set_ref:
+            return False, "Verification failed: block set exists but no active drop/reject rule references set @blocked_ips.", evidence_dict
+
+        # Check block expiration/timeout when applicable
+        if action.get("timeout_seconds"):
+            is_exp, rem, _ = compute_action_expiry(action)
+            if is_exp:
+                return False, "Verification failed: temporary block action has expired.", evidence_dict
+
+        summary = evidence_str[:500] if evidence_str else f"Firewall containment verified for target {target_ip} in table {evidence_dict.get('table', 'mini_enterprise')} set {evidence_dict.get('set', 'blocked_ips')}"
+
+    elif action_type == "UNBLOCK_IP":
+        elements_list = [str(x) for x in evidence_dict.get("elements", [])]
+        if target_ip in elements_list:
+            return False, f"Verification failed: target IP '{target_ip}' is still present in block set elements.", evidence_dict
+
+        if "set blocked_ips" in lower_ev and "elements" in lower_ev and target_ip in found_ips:
+            return False, f"Verification failed: target IP '{target_ip}' is still present in block set elements.", evidence_dict
+
+        if evidence_dict.get("other_blocking_rules") is True:
+            return False, f"Verification failed: another active firewall rule still blocks target IP '{target_ip}'.", evidence_dict
+
+        if re.search(rf"ip\s+saddr\s+{re.escape(target_ip)}.*?(?:drop|reject)", lower_ev):
+            return False, f"Verification failed: target IP '{target_ip}' is still blocked by an active firewall rule.", evidence_dict
+
+        summary = evidence_str[:500] if evidence_str else f"Rollback unblock verified for target {target_ip}: absent from block set and no active blocking rules"
+
+    else:
+        return False, f"Verification failed: action type '{action_type}' requires application-level instrumentation pending deployment.", evidence_dict
+
     evidence_dict.setdefault("verified", True)
     evidence_dict.setdefault("target_ip", target_ip)
+    evidence_dict.setdefault("action_id", action_id)
+    evidence_dict.setdefault("action_type", action_type)
     evidence_dict.setdefault("verifier", evidence_dict.get("verifier", "host_nftables_query"))
     evidence_dict.setdefault("summary", summary)
     evidence_dict.setdefault("timestamp", now())
@@ -951,9 +1177,61 @@ def init_db(db_path=None):
             ("destination_ip", "TEXT"),
             ("destination_port", "INTEGER"),
             ("protocol", "TEXT"),
+            ("classification_type", "TEXT DEFAULT 'known_attack'"),
+            ("detection_method", "TEXT DEFAULT 'rule'"),
+            ("confidence", "REAL"),
+            ("anomaly_score", "REAL"),
+            ("model_name", "TEXT"),
+            ("model_version", "TEXT"),
+            ("status", "TEXT DEFAULT 'new'"),
+            ("analyst_disposition", "TEXT"),
+            ("measurement_window_seconds", "INTEGER"),
+            ("threshold_value", "REAL"),
+            ("observed_value", "REAL"),
         ]:
             if col_name not in cols_alerts:
                 c.execute(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_type}")
+
+        # Indices for alert filtering
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_class ON alerts(classification_type)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp)")
+
+        # Create alert_notes, soc_security_events, and ingestion_telemetry tables
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS alert_notes(
+          note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          alert_id INTEGER NOT NULL REFERENCES alerts(id),
+          author TEXT NOT NULL DEFAULT 'SOC_ANALYST',
+          created_at TEXT NOT NULL,
+          note_text TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_notes_alert ON alert_notes(alert_id);
+
+        CREATE TABLE IF NOT EXISTS soc_security_events(
+          event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          source_ip TEXT NOT NULL,
+          endpoint TEXT NOT NULL,
+          severity TEXT NOT NULL DEFAULT 'medium',
+          details TEXT NOT NULL DEFAULT '',
+          occurrence_count INTEGER NOT NULL DEFAULT 1,
+          last_seen TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sec_events_type ON soc_security_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_sec_events_src ON soc_security_events(source_ip);
+
+        CREATE TABLE IF NOT EXISTS ingestion_telemetry(
+          metric_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          source_ip TEXT NOT NULL,
+          event_id TEXT,
+          status TEXT NOT NULL,
+          error_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ingest_time ON ingestion_telemetry(timestamp);
+        """)
 
         # Safe migration: ensure columns exist on response_actions
         cols_actions = [r[1] for r in c.execute("PRAGMA table_info(response_actions)").fetchall()]
@@ -1050,10 +1328,101 @@ def init_db(db_path=None):
         if fk_violations:
             raise sqlite3.IntegrityError(f"Foreign key violations detected during database initialization: {fk_violations}")
 
+def log_soc_security_event(
+    event_type: str,
+    source_ip: str,
+    endpoint: str,
+    severity: str = "medium",
+    details: str = "",
+    c: Optional[sqlite3.Connection] = None
+):
+    """
+    Record internal SOC security event with deduplication to prevent alert storms.
+    """
+    valid_types = (
+        "FAILED_LOGIN", "INVALID_TOKEN", "UNAUTHORIZED_ACCESS",
+        "RATE_LIMIT_EXCEEDED", "MALFORMED_PAYLOAD", "SUSPICIOUS_ACCESS",
+        "UNAUTHORIZED_CONTAINMENT", "SERVICE_FAILURE", "IP_RESTRICTED"
+    )
+    if event_type not in valid_types:
+        event_type = "UNAUTHORIZED_ACCESS"
+    current_ts = now()
+    clean_ip = str(source_ip or "unknown")[:64]
+    clean_endpoint = str(endpoint or "")[:128]
+    clean_details = str(details or "")[:1000]
+
+    def _do_log(conn):
+        recent = conn.execute("""
+            SELECT event_id, occurrence_count, last_seen
+            FROM soc_security_events
+            WHERE event_type = ? AND source_ip = ? AND endpoint = ?
+            ORDER BY event_id DESC LIMIT 1
+        """, (event_type, clean_ip, clean_endpoint)).fetchone()
+
+        if recent:
+            try:
+                last_ts = parse_iso_ts(recent["last_seen"])
+                now_ts = parse_iso_ts(current_ts)
+                if (now_ts - last_ts) < 60.0:
+                    conn.execute("""
+                        UPDATE soc_security_events
+                        SET occurrence_count = occurrence_count + 1, last_seen = ?, details = ?
+                        WHERE event_id = ?
+                    """, (current_ts, clean_details, recent["event_id"]))
+                    return
+            except Exception:
+                pass
+
+        conn.execute("""
+            INSERT INTO soc_security_events
+            (timestamp, event_type, source_ip, endpoint, severity, details, occurrence_count, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        """, (current_ts, event_type, clean_ip, clean_endpoint, severity, clean_details, current_ts))
+
+    try:
+        if c is not None:
+            _do_log(c)
+        else:
+            with db() as conn:
+                _do_log(conn)
+    except Exception as exc:
+        app.logger.warning(f"Failed to record SOC security event: {exc}")
+
+def record_ingestion_metric(source_ip: str, status: str, event_id: Optional[str] = None, error: Optional[str] = None, c: Optional[sqlite3.Connection] = None):
+    """Safely log telemetry delivery and processing metrics."""
+    try:
+        if c is not None:
+            c.execute("""
+                INSERT INTO ingestion_telemetry (timestamp, source_ip, event_id, status, error_reason)
+                VALUES (?, ?, ?, ?, ?)
+            """, (now(), str(source_ip or "unknown")[:64], str(event_id or "")[:64] if event_id else None, status, str(error or "")[:500] if error else None))
+        else:
+            with db() as conn:
+                conn.execute("""
+                    INSERT INTO ingestion_telemetry (timestamp, source_ip, event_id, status, error_reason)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (now(), str(source_ip or "unknown")[:64], str(event_id or "")[:64] if event_id else None, status, str(error or "")[:500] if error else None))
+    except Exception:
+        pass
+
 def auth(role):
     def deco(fn):
         @wraps(fn)
         def inner(*a, **kw):
+            client_ip = request.remote_addr or "127.0.0.1"
+
+            # 1. IP allowlist check
+            if not is_ip_allowed(client_ip, role):
+                app.logger.warning(
+                    f"Access forbidden: {client_ip} is not in {role} allowlist on {request.method} {request.path}"
+                )
+                log_soc_security_event(
+                    "IP_RESTRICTED", client_ip, request.path, "high",
+                    f"Client IP not authorized by ALLOWED_{role.upper()}_IPS"
+                )
+                return jsonify(error="Forbidden: Host IP not authorized"), 403
+
+            # 2. Token configuration check
             expected = get_agent_token() if role == "agent" else get_analyst_token()
             if not expected:
                 app.logger.warning(
@@ -1061,23 +1430,66 @@ def auth(role):
                     f"{role} authentication is not configured on the SOC backend (missing token)"
                 )
                 return jsonify(error=f"{role} auth not configured"), 503
+
+            # 3. Token extraction
             header = request.headers.get("Authorization", "")
             token = header[7:].strip() if header.startswith("Bearer ") else ""
             if not token and not header:
                 token = request.headers.get("X-API-Key", "").strip()
-            client_ip = request.remote_addr or "unknown"
+
+            # 4. Token validation before consuming authenticated rate limit
+            # Unauthenticated requests are throttled separately so they cannot exhaust authenticated agent quota
+            unauth_limit = int(app.config.get("SOC_UNAUTH_RATE_LIMIT_PER_MINUTE") or os.getenv("SOC_UNAUTH_RATE_LIMIT_PER_MINUTE", "60"))
             if not token:
+                unauth_allowed, _, retry_after = unauth_rate_limiter.is_allowed(client_ip, unauth_limit)
+                if not unauth_allowed:
+                    resp = jsonify(error="Rate limit exceeded for unauthenticated requests. Please authenticate.")
+                    resp.headers["Retry-After"] = str(int(retry_after))
+                    return resp, 429
+
                 app.logger.warning(
                     f"Authentication failed on {request.method} {request.path} from {client_ip}: "
                     f"Missing or malformed Authorization header (expected Bearer token)"
                 )
+                log_soc_security_event(
+                    "UNAUTHORIZED_ACCESS", client_ip, request.path, "low",
+                    f"Missing or malformed Authorization header for {role}"
+                )
                 return jsonify(error="Unauthorized"), 401
+
             if not secrets.compare_digest(token, expected):
+                unauth_allowed, _, retry_after = unauth_rate_limiter.is_allowed(client_ip, unauth_limit)
+                if not unauth_allowed:
+                    resp = jsonify(error="Rate limit exceeded for unauthenticated requests.")
+                    resp.headers["Retry-After"] = str(int(retry_after))
+                    return resp, 429
+
                 app.logger.warning(
                     f"Authentication failed on {request.method} {request.path} from {client_ip}: "
                     f"Invalid {role} token supplied (length: {len(token)})"
                 )
+                log_soc_security_event(
+                    "INVALID_TOKEN" if role == "agent" else "FAILED_LOGIN",
+                    client_ip, request.path, "medium",
+                    f"Invalid {role} token supplied (length: {len(token)})"
+                )
                 return jsonify(error="Unauthorized"), 401
+
+            # 5. Authenticated rate limit check: only authenticated callers consume this quota
+            limit = int(app.config.get("SOC_RATE_LIMIT_PER_MINUTE") or os.getenv("SOC_RATE_LIMIT_PER_MINUTE", "600"))
+            allowed, count, retry_after = rate_limiter.is_allowed(client_ip, limit)
+            if not allowed:
+                app.logger.warning(
+                    f"Rate limit exceeded on {request.method} {request.path} from {client_ip} ({count}/{limit})"
+                )
+                log_soc_security_event(
+                    "RATE_LIMIT_EXCEEDED", client_ip, request.path, "medium",
+                    f"Exceeded {limit} req/min; retry after {retry_after}s"
+                )
+                resp = jsonify(error="Rate limit exceeded. Please throttle requests.")
+                resp.headers["Retry-After"] = str(int(retry_after))
+                return resp, 429
+
             return fn(*a, **kw)
         return inner
     return deco
@@ -1086,7 +1498,7 @@ def is_management_ip(raw_ip: str) -> bool:
     """Check if IPv4 address belongs to dashboard management listener, loopback, or protected set."""
     try:
         ip = ipaddress.ip_address(raw_ip)
-        if ip.is_loopback:
+        if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local or ip.is_reserved:
             return True
         bind_host = get_bind_host()
         if bind_host and bind_host not in ("0.0.0.0", "::"):
@@ -1094,24 +1506,40 @@ def is_management_ip(raw_ip: str) -> bool:
                 if ip == ipaddress.ip_address(bind_host):
                     return True
             except ValueError:
-                pass
-        prot = os.getenv("PROTECTED_IPS", "")
+                try:
+                    for res in socket.getaddrinfo(bind_host, None, socket.AF_INET):
+                        if ip == ipaddress.ip_address(res[4][0]):
+                            return True
+                except Exception:
+                    pass
+        prot = app.config.get("PROTECTED_IPS") or os.getenv("PROTECTED_IPS", "")
         if prot:
-            for item in prot.split(","):
+            for item in str(prot).split(","):
                 item = item.strip()
                 if item:
                     try:
-                        if ip == ipaddress.ip_address(item) or ip in ipaddress.ip_network(item, strict=False):
-                            return True
+                        if "/" in item:
+                            if ip in ipaddress.ip_network(item, strict=False):
+                                return True
+                        else:
+                            if ip == ipaddress.ip_address(item):
+                                return True
                     except ValueError:
-                        pass
+                        try:
+                            for res in socket.getaddrinfo(item, None, socket.AF_INET):
+                                if ip == ipaddress.ip_address(res[4][0]):
+                                    return True
+                        except Exception:
+                            pass
     except Exception:
         pass
     return False
 
 def valid_ip(raw):
-    ip = ipaddress.ip_address(raw)
-    if not isinstance(ip, ipaddress.IPv4Address) or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
+    if not raw or not isinstance(raw, str):
+        raise ValueError("Expected non-empty string for IPv4 address")
+    ip = ipaddress.ip_address(raw.strip())
+    if not isinstance(ip, ipaddress.IPv4Address) or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local or ip.is_reserved:
         raise ValueError("Expected non-special IPv4 address")
     return str(ip)
 
@@ -1210,20 +1638,31 @@ def ingest():
         try:
             with db() as c:
                 existing = c.execute(
-                    "SELECT event_id, incident_id, mitre_id, signature FROM alerts WHERE event_id=?",
+                    "SELECT event_id, incident_id, mitre_id, signature, classification_type, detection_method FROM alerts WHERE event_id=?",
                     (event_id,)
                 ).fetchone()
                 if existing:
                     app.logger.info(f"Duplicate event_id '{event_id}' safely deduplicated (idempotent)")
+                    record_ingestion_metric(source, "DEDUPLICATED", event_id)
                     return jsonify(
                         status="accepted",
                         event_id=existing["event_id"],
                         mitre_id=existing["mitre_id"],
                         signature=existing["signature"],
-                        incident_id=existing["incident_id"]
+                        incident_id=existing["incident_id"],
+                        classification_type=existing["classification_type"] or "known_attack",
+                        detection_method=existing["detection_method"] or "rule"
                     ), 202
         except sqlite3.Error as e:
+            record_ingestion_metric(source, "FAILED", event_id, str(e))
             return jsonify(error=f"Database persistence error: {str(e)}"), 500
+
+    # Classification & Detection Method Initialization
+    raw_class_type = d.get("classification_type") or d.get("category") or ""
+    explicit_class_type = str(raw_class_type).lower().strip() if raw_class_type else ""
+    classification_type = "known_attack"
+    detection_method = str(d.get("detection_method") or "rule").lower().strip()
+    mitre = None
 
     # Handle Directory Discovery (DIR_FUZZ) & HTTP 404 Probing Logic
     is_dir_fuzz_candidate = (
@@ -1235,6 +1674,7 @@ def ingest():
         # False-positive safeguard: exclude benign assets
         if is_benign_path(requested_path):
             app.logger.info(f"Benign path probe '{requested_path}' from {source} ignored (false-positive safeguard)")
+            record_ingestion_metric(source, "SUPPRESSED_BENIGN", event_id)
             return jsonify(
                 status="accepted",
                 event_type="benign_path_suppressed",
@@ -1268,6 +1708,7 @@ def ingest():
             else:
                 # Below threshold: acknowledge without attack alert
                 app.logger.info(f"404 probe from {source} for '{requested_path}' below threshold ({count}/{threshold})")
+                record_ingestion_metric(source, "SUCCESS", event_id, "404 probe recorded below threshold")
                 return jsonify(
                     status="accepted",
                     event_type="probe_recorded",
@@ -1280,14 +1721,58 @@ def ingest():
             sig = "DIR_FUZZ"
             detection_reason = detection_reason or f"Directory fuzzing probe targeting {requested_path}"
             raw_sev = d.get("severity", "medium")
+        mitre = REGISTRY[sig][0]
+        classification_type = "known_attack"
+        detection_method = "rule"
     else:
-        sig = EVENT_NORMALIZATION.get(cleaned_sig)
-        if not sig or sig not in REGISTRY:
-            app.logger.warning(f"Ingestion rejected from {source}: Unsupported signature '{raw_sig}'")
-            return jsonify(
-                error=f"Unsupported signature '{raw_sig}'. Must map to registered detection types: {list(REGISTRY.keys())}"
-            ), 400
-        raw_sev = d.get("severity", "medium")
+        # Check standard registered attack aliases first
+        mapped_sig = EVENT_NORMALIZATION.get(cleaned_sig)
+        if mapped_sig and mapped_sig in REGISTRY:
+            sig = mapped_sig
+            mitre = REGISTRY[sig][0]
+            classification_type = "known_attack"
+            detection_method = str(d.get("detection_method") or "rule").lower().strip()
+            raw_sev = d.get("severity", "medium")
+        else:
+            # Check if event is explicitly or structurally an anomaly or unknown
+            is_anomaly_candidate = (
+                explicit_class_type == "suspicious_anomaly"
+                or any(k in cleaned_sig for k in ("ANOMALY", "BURST", "SUSPICIOUS", "OUTLIER", "SSRF", "TAMPER"))
+                or d.get("anomaly_score") is not None
+            )
+            is_unknown_candidate = (
+                explicit_class_type == "unknown"
+                or cleaned_sig in ("UNKNOWN", "UNCLASSIFIED", "UNKNOWN_EVENT")
+            )
+
+            if is_anomaly_candidate:
+                sig = cleaned_sig
+                mitre = d.get("mitre_id") or None
+                classification_type = "suspicious_anomaly"
+                detection_method = str(d.get("detection_method") or "statistical_anomaly").lower().strip()
+                raw_sev = d.get("severity", "medium")
+            elif is_unknown_candidate:
+                sig = cleaned_sig
+                mitre = None
+                classification_type = "unknown"
+                detection_method = str(d.get("detection_method") or "heuristic").lower().strip()
+                raw_sev = d.get("severity", "low")
+            else:
+                # Evaluate via modular ML engine if enabled
+                ml_res = ml_engine.evaluate(d) if ml_engine else None
+                if ml_res and ml_res.classification_type in ("known_attack", "suspicious_anomaly") and not ml_res.is_ood and ml_res.confidence >= 0.70:
+                    sig = ml_res.predicted_category
+                    mitre = ml_res.mitre_technique
+                    classification_type = ml_res.classification_type
+                    detection_method = "ml_model"
+                    raw_sev = d.get("severity", "high" if ml_res.anomaly_score > 0.8 else "medium")
+                else:
+                    app.logger.warning(f"Ingestion rejected from {source}: Unsupported signature '{raw_sig}'")
+                    record_ingestion_metric(source, "FAILED", event_id, f"Unsupported signature '{raw_sig}'")
+                    log_soc_security_event("MALFORMED_PAYLOAD", source, request.path, "low", f"Unsupported signature '{raw_sig}'")
+                    return jsonify(
+                        error=f"Unsupported signature '{raw_sig}'. Must map to registered detection types: {list(REGISTRY.keys())}"
+                    ), 400
 
     # Validate severity
     if not isinstance(raw_sev, str):
@@ -1295,6 +1780,7 @@ def ingest():
     severity = raw_sev.lower().strip()
     if severity not in ("info", "low", "medium", "high", "critical"):
         app.logger.warning(f"Ingestion rejected from {source}: Invalid severity '{raw_sev}'")
+        record_ingestion_metric(source, "FAILED", event_id, f"Invalid severity '{raw_sev}'")
         return jsonify(error=f"Invalid 'severity' '{raw_sev}'. Must be one of ('info', 'low', 'medium', 'high', 'critical')"), 400
 
     raw_ts = d.get("timestamp")
@@ -1316,7 +1802,8 @@ def ingest():
     if raw_msg:
         msg = str(raw_msg)[:2048]
     elif details:
-        msg = f"{REGISTRY[sig][1]} probe detected ({'; '.join(details)})"[:2048]
+        tech_label = REGISTRY[sig][1] if sig in REGISTRY else sig
+        msg = f"{tech_label} probe detected ({'; '.join(details)})"[:2048]
     else:
         msg = ""
 
@@ -1340,21 +1827,71 @@ def ingest():
             dst_port = None
         protocol = str(d.get("protocol") or "TCP")[:10]
 
-    mitre = REGISTRY[sig][0]
+    # Model and anomaly evaluation fields
+    confidence = None
+    if "confidence" in d:
+        try:
+            c_val = float(d["confidence"])
+            if 0.0 <= c_val <= 1.0:
+                confidence = c_val
+        except (ValueError, TypeError):
+            pass
+
+    anomaly_score = None
+    if "anomaly_score" in d:
+        try:
+            a_val = float(d["anomaly_score"])
+            if 0.0 <= a_val <= 1.0:
+                anomaly_score = a_val
+        except (ValueError, TypeError):
+            pass
+
+    model_name = str(d.get("model_name") or "")[:64] or None
+    model_version = str(d.get("model_version") or "")[:32] or None
+    if not model_name and detection_method == "ml_model":
+        model_name = "SOCML-Orchestrator"
+        model_version = "1.0.0"
+
+    measurement_window = None
+    if "measurement_window_seconds" in d or "window_seconds" in d:
+        try:
+            measurement_window = int(d.get("measurement_window_seconds") or d.get("window_seconds"))
+        except (ValueError, TypeError):
+            pass
+
+    threshold_val = None
+    if "threshold_value" in d or "threshold" in d:
+        try:
+            threshold_val = float(d.get("threshold_value") or d.get("threshold"))
+        except (ValueError, TypeError):
+            pass
+
+    observed_val = None
+    if "observed_value" in d or "observed" in d:
+        try:
+            observed_val = float(d.get("observed_value") or d.get("observed"))
+        except (ValueError, TypeError):
+            pass
+
     try:
         with db() as c:
-            # 1. Insert alert with extended HTTP telemetry and evidence columns
+            # 1. Insert alert with extended classification, telemetry, and evidence columns
             c.execute("""INSERT OR IGNORE INTO alerts
               (event_id,source_ip,signature,severity,timestamp,message,mitre_id,
                http_method,requested_path,response_status,detection_reason,
-               metadata_json,destination_ip,destination_port,protocol)
-              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               metadata_json,destination_ip,destination_port,protocol,
+               classification_type,detection_method,confidence,anomaly_score,
+               model_name,model_version,status,analyst_disposition,
+               measurement_window_seconds,threshold_value,observed_value)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'new',NULL,?,?,?)""",
               (event_id, source, sig, severity, ts, msg, mitre,
                http_method if requested_path else None,
                requested_path if requested_path else None,
                response_status,
                detection_reason if detection_reason else None,
-               metadata_json, dst_ip, dst_port, protocol))
+               metadata_json, dst_ip, dst_port, protocol,
+               classification_type, detection_method, confidence, anomaly_score,
+               model_name, model_version, measurement_window, threshold_val, observed_val))
 
             # 2. Correlate to existing open incident or create new incident
             inc_row = c.execute("""
@@ -1375,11 +1912,17 @@ def ingest():
                 c.execute("""
                     INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                     VALUES (?, 'SYSTEM', ?, ?, 'SYSTEM')
-                """, (inc_id, now(), f"Correlated alert {event_id} ({severity}): {msg[:120]}"))
+                """, (inc_id, now(), f"Correlated alert {event_id} ({severity}, {classification_type}): {msg[:120]}"))
                 app.logger.info(f"Correlated {sig} alert ({event_id}, severity={severity}) from {source} into existing incident #{inc_id}")
             else:
-                tech_name = REGISTRY[sig][1]
-                title = f"{tech_name} detected from {source}"
+                if sig in REGISTRY:
+                    tech_name = REGISTRY[sig][1]
+                    title = f"{tech_name} detected from {source}"
+                elif classification_type == "suspicious_anomaly":
+                    title = f"Suspicious Anomaly ({sig}) from {source}"
+                else:
+                    title = f"Unclassified Telemetry ({sig}) from {source}"
+
                 cur_inc = c.execute("""
                     INSERT INTO incidents (title, status, severity, source_ip, signature, mitre_id, created_at, updated_at, defense_status)
                     VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, 'Detected')
@@ -1389,10 +1932,13 @@ def ingest():
                 c.execute("""
                     INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                     VALUES (?, 'SYSTEM', ?, ?, 'SYSTEM')
-                """, (inc_id, now(), f"Incident opened from alert {event_id} ({severity}): {msg[:120]}"))
+                """, (inc_id, now(), f"Incident opened from alert {event_id} ({severity}, {classification_type}): {msg[:120]}"))
                 app.logger.info(f"Opened new incident #{inc_id} from {sig} alert ({event_id}, severity={severity}) from {source}")
 
+            record_ingestion_metric(source, "SUCCESS", event_id, c=c)
+
     except sqlite3.Error as e:
+        record_ingestion_metric(source, "FAILED", event_id, str(e))
         return jsonify(error=f"Database persistence error: {str(e)}"), 500
 
     return jsonify(
@@ -1400,7 +1946,11 @@ def ingest():
         event_id=event_id,
         mitre_id=mitre,
         signature=sig,
-        incident_id=inc_id
+        incident_id=inc_id,
+        classification_type=classification_type,
+        detection_method=detection_method,
+        confidence=confidence,
+        anomaly_score=anomaly_score
     ), 202
 
 @app.get("/api/agent/pending-actions")
@@ -1415,18 +1965,68 @@ def pending():
 @auth("agent")
 def status():
     d = request.get_json(silent=True) or {}
-    try: aid = int(d["action_id"])
-    except (KeyError, ValueError, TypeError): return jsonify(error="Valid action_id required"), 400
-    state = d.get("status")
+    try:
+        aid = int(d["action_id"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify(error="Valid action_id required"), 400
+
+    state = str(d.get("status", "")).upper().strip()
+    if state == "VERIFIED":
+        return jsonify(error="Agent cannot directly mark action as VERIFIED; actions must be verified via the verification endpoint with authentic proof"), 400
+
     if state not in ("EXECUTED", "FAILED", "DRY_RUN", "MITIGATION_APPLIED"):
         return jsonify(error="Invalid status"), 400
+
+    client_ip = request.remote_addr or "127.0.0.1"
+
     with db() as c:
-        cur = c.execute("""UPDATE response_actions SET status=?,executed_at=?,message=?
-          WHERE action_id=? AND status='APPROVED'""", (state, now(), str(d.get("message", ""))[:500], aid))
-        if cur.rowcount != 1: return jsonify(error="Action not found or not approved"), 404
-        action = c.execute("SELECT incident_id, target_ip, action_type, timeout_seconds FROM response_actions WHERE action_id=?", (aid,)).fetchone()
-        if action and action["incident_id"]:
-            inc_id = action["incident_id"]
+        action = c.execute("SELECT * FROM response_actions WHERE action_id=?", (aid,)).fetchone()
+        if not action:
+            return jsonify(error="Action not found or not approved"), 404
+
+        act_dict = dict(action)
+
+        # Validate target_ip if provided
+        req_ip = d.get("target_ip")
+        if req_ip and str(req_ip).strip() != act_dict["target_ip"]:
+            log_soc_security_event(
+                "MALFORMED_PAYLOAD", client_ip, request.path, "high",
+                f"Mismatched target IP in agent report: {req_ip} != {act_dict['target_ip']}"
+            )
+            return jsonify(error=f"Target IP mismatch: request target_ip '{req_ip}' does not match action target_ip '{act_dict['target_ip']}'"), 400
+
+        # Validate action_type if provided
+        req_type = d.get("action_type")
+        if req_type and str(req_type).upper().strip() != str(act_dict["action_type"]).upper().strip():
+            return jsonify(error=f"Action type mismatch: request action_type '{req_type}' does not match action action_type '{act_dict['action_type']}'"), 400
+
+        # Validate state transitions
+        current_st = act_dict["status"]
+        if current_st in ("CANCELLED", "EXPIRED"):
+            return jsonify(error=f"Cannot transition action #{aid} from terminal state '{current_st}'"), 409
+
+        if current_st == state:
+            return jsonify(status="acknowledged", idempotent=True)
+
+        if current_st not in ("APPROVED", "VERIFICATION_PENDING"):
+            return jsonify(error="Action not found or not approved"), 404
+
+        # Attach evidence if provided without marking as verified
+        ev_payload = d.get("evidence") or d.get("verification_evidence")
+        ev_json = None
+        if ev_payload is not None:
+            ev_json = json.dumps(ev_payload) if isinstance(ev_payload, dict) else str(ev_payload)
+
+        msg = str(d.get("message", ""))[:500]
+        if ev_json:
+            c.execute("""UPDATE response_actions SET status=?, executed_at=?, message=?, verification_evidence=?
+              WHERE action_id=?""", (state, now(), msg, ev_json, aid))
+        else:
+            c.execute("""UPDATE response_actions SET status=?, executed_at=?, message=?
+              WHERE action_id=?""", (state, now(), msg, aid))
+
+        inc_id = act_dict.get("incident_id")
+        if inc_id:
             if state in ("EXECUTED", "MITIGATION_APPLIED"):
                 def_st = "Mitigation Applied"
             elif state == "FAILED":
@@ -1437,8 +2037,44 @@ def status():
             c.execute("""
                 INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
                 VALUES (?, 'SYSTEM', ?, ?, 'CONTAINMENT_REQUEST')
-            """, (inc_id, now(), f"Agent reported action #{aid} status as {state}. Message: {str(d.get('message',''))[:120]}"))
+            """, (inc_id, now(), f"Agent reported action #{aid} status as {state}. Message: {msg[:120]}"))
+
     return jsonify(status="acknowledged")
+
+@app.post("/api/agent/response-actions/<int:aid>/evidence")
+@auth("agent")
+def submit_agent_verification_evidence(aid):
+    """Allow remediator agent to submit authentic host firewall verification evidence."""
+    d = request.get_json(silent=True) or {}
+    client_ip = request.remote_addr or "127.0.0.1"
+
+    with db() as c:
+        action = c.execute("SELECT * FROM response_actions WHERE action_id=?", (aid,)).fetchone()
+        if not action:
+            return jsonify(error="Action not found"), 404
+
+        act_dict = dict(action)
+        if d.get("target_ip") and str(d["target_ip"]).strip() != act_dict["target_ip"]:
+            log_soc_security_event(
+                "MALFORMED_PAYLOAD", client_ip, request.path, "high",
+                f"Mismatched target IP in agent evidence submission: {d.get('target_ip')} != {act_dict['target_ip']}"
+            )
+            return jsonify(error="Target IP mismatch: evidence target_ip does not match action target_ip"), 400
+
+        if d.get("action_type") and str(d["action_type"]).upper().strip() != str(act_dict["action_type"]).upper().strip():
+            return jsonify(error="Action type mismatch: evidence action_type does not match action action_type"), 400
+
+        ev_json = json.dumps(d) if isinstance(d, dict) else str(d)
+        c.execute("UPDATE response_actions SET verification_evidence=? WHERE action_id=?", (ev_json, aid))
+
+        inc_id = act_dict.get("incident_id")
+        if inc_id:
+            c.execute("""
+                INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                VALUES (?, 'SYSTEM', ?, ?, 'CONTAINMENT_REQUEST')
+            """, (inc_id, now(), f"Remediator submitted host verification evidence for action #{aid}."))
+
+    return jsonify(status="accepted", action_id=aid)
 
 @app.post("/api/soc/mitigate/block")
 @auth("analyst")
@@ -2073,7 +2709,10 @@ def get_incident_details(incident_id):
         alert_rows = c.execute("""
             SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id,
                    http_method, requested_path, response_status, detection_reason,
-                   metadata_json, destination_ip, destination_port, protocol
+                   metadata_json, destination_ip, destination_port, protocol,
+                   classification_type, detection_method, confidence, anomaly_score,
+                   model_name, model_version, status, analyst_disposition,
+                   measurement_window_seconds, threshold_value, observed_value
             FROM alerts WHERE incident_id = ? ORDER BY id DESC
         """, (incident_id,)).fetchall()
         alerts = [dict(a) for a in alert_rows]
@@ -2082,7 +2721,10 @@ def get_incident_details(incident_id):
         related_rows = c.execute("""
             SELECT id, event_id, source_ip, signature, severity, timestamp, message, mitre_id, incident_id,
                    http_method, requested_path, response_status, detection_reason,
-                   metadata_json, destination_ip, destination_port, protocol
+                   metadata_json, destination_ip, destination_port, protocol,
+                   classification_type, detection_method, confidence, anomaly_score,
+                   model_name, model_version, status, analyst_disposition,
+                   measurement_window_seconds, threshold_value, observed_value
             FROM alerts
             WHERE (source_ip = ? OR signature = ?) AND (incident_id IS NULL OR incident_id != ?)
             ORDER BY id DESC LIMIT 15
@@ -2298,13 +2940,24 @@ def list_alerts():
     severity_filter = request.args.get("severity", "").lower().strip()
     source_filter = request.args.get("source_ip", "").strip()
     sig_filter = request.args.get("signature", "").upper().strip()
+    class_filter = request.args.get("classification_type", "").lower().strip()
+    method_filter = request.args.get("detection_method", "").lower().strip()
+    status_filter = request.args.get("status", "").lower().strip()
+    mitre_filter = request.args.get("mitre_id", "").upper().strip() or request.args.get("technique_id", "").upper().strip()
+    from_time = request.args.get("from_time", "").strip()
+    to_time = request.args.get("to_time", "").strip()
+    search_q = request.args.get("search", "").strip()
     limit = min(int(request.args.get("limit", 100)), 500)
+    offset = max(0, int(request.args.get("offset", 0)))
 
     query = """
         SELECT a.id, a.event_id, a.source_ip, a.signature, a.severity, a.timestamp,
                a.message, a.mitre_id, a.incident_id, a.http_method, a.requested_path,
                a.response_status, a.detection_reason,
                a.metadata_json, a.destination_ip, a.destination_port, a.protocol,
+               a.classification_type, a.detection_method, a.confidence, a.anomaly_score,
+               a.model_name, a.model_version, a.status, a.analyst_disposition,
+               a.measurement_window_seconds, a.threshold_value, a.observed_value,
                i.title AS incident_title, i.status AS incident_status, i.defense_status AS incident_defense_status
         FROM alerts a
         LEFT JOIN incidents i ON a.incident_id = i.incident_id
@@ -2320,9 +2973,31 @@ def list_alerts():
     if sig_filter and sig_filter != "ALL":
         query += " AND a.signature = ?"
         params.append(sig_filter)
+    if class_filter and class_filter != "all":
+        query += " AND a.classification_type = ?"
+        params.append(class_filter)
+    if method_filter and method_filter != "all":
+        query += " AND a.detection_method = ?"
+        params.append(method_filter)
+    if status_filter and status_filter != "all":
+        query += " AND a.status = ?"
+        params.append(status_filter)
+    if mitre_filter and mitre_filter != "ALL":
+        query += " AND a.mitre_id = ?"
+        params.append(mitre_filter)
+    if from_time:
+        query += " AND a.timestamp >= ?"
+        params.append(from_time)
+    if to_time:
+        query += " AND a.timestamp <= ?"
+        params.append(to_time)
+    if search_q:
+        query += " AND (a.source_ip LIKE ? OR a.signature LIKE ? OR a.message LIKE ? OR a.requested_path LIKE ? OR a.detection_reason LIKE ?)"
+        pattern = f"%{search_q}%"
+        params.extend([pattern, pattern, pattern, pattern, pattern])
 
-    query += " ORDER BY a.id DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY a.id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
 
     with db() as c:
         rows = c.execute(query, params).fetchall()
@@ -2330,10 +3005,13 @@ def list_alerts():
         for r in rows:
             ad = dict(r)
             sig = ad["signature"]
-            reg = REGISTRY.get(sig, (ad["mitre_id"] or "Unknown", sig, "Unknown"))
-            ad["technique_id"] = reg[0]
-            ad["technique_name"] = reg[1]
-            ad["tactic"] = reg[2]
+            reg = REGISTRY.get(sig, (ad["mitre_id"] or None, sig, "Unclassified" if ad["classification_type"] != "known_attack" else "Unknown"))
+            ad["technique_id"] = ad["mitre_id"] or reg[0]
+            ad["technique_name"] = reg[1] if sig in REGISTRY else (ad["signature"] if ad["classification_type"] == "suspicious_anomaly" else "Unclassified Telemetry")
+            ad["tactic"] = reg[2] if sig in REGISTRY else ("Anomaly" if ad["classification_type"] == "suspicious_anomaly" else "Triage")
+            ad["classification_type"] = ad.get("classification_type") or "known_attack"
+            ad["detection_method"] = ad.get("detection_method") or "rule"
+            ad["status"] = ad.get("status") or "new"
             if ad.get("metadata_json"):
                 try:
                     ad["metadata"] = json.loads(ad["metadata_json"])
@@ -2344,6 +3022,221 @@ def list_alerts():
             alerts.append(ad)
 
     return jsonify(status="success", count=len(alerts), alerts=alerts)
+
+@app.get("/api/soc/alerts/<identifier>")
+@auth("analyst")
+def get_alert_detail(identifier):
+    """Retrieve full details, notes, and audit history for a single alert."""
+    with db() as c:
+        query = """
+            SELECT a.*, i.title AS incident_title, i.status AS incident_status, i.defense_status AS incident_defense_status
+            FROM alerts a
+            LEFT JOIN incidents i ON a.incident_id = i.incident_id
+            WHERE a.id = ? OR a.event_id = ?
+            LIMIT 1
+        """
+        row = c.execute(query, (identifier, identifier)).fetchone()
+        if not row:
+            return jsonify(error="Alert not found"), 404
+
+        ad = dict(row)
+        sig = ad["signature"]
+        reg = REGISTRY.get(sig, (ad["mitre_id"] or None, sig, "Unclassified"))
+        ad["technique_id"] = ad["mitre_id"] or reg[0]
+        ad["technique_name"] = reg[1] if sig in REGISTRY else ad["signature"]
+        ad["tactic"] = reg[2] if sig in REGISTRY else ("Anomaly" if ad["classification_type"] == "suspicious_anomaly" else "Triage")
+        if ad.get("metadata_json"):
+            try:
+                ad["metadata"] = json.loads(ad["metadata_json"])
+            except Exception:
+                ad["metadata"] = {}
+        else:
+            ad["metadata"] = {}
+
+        notes_raw = c.execute("SELECT * FROM alert_notes WHERE alert_id = ? ORDER BY note_id ASC", (ad["id"],)).fetchall()
+        notes = []
+        for n in notes_raw:
+            nd = dict(n)
+            nd["note"] = nd["note_text"]
+            nd["timestamp"] = nd["created_at"]
+            notes.append(nd)
+        ad["notes"] = notes
+
+    return jsonify(status="success", alert=ad, notes=notes)
+
+@app.post("/api/soc/alerts/<identifier>/status")
+@auth("analyst")
+def update_alert_status(identifier):
+    """Update analyst disposition for an alert (investigating, confirmed, false_positive, resolved)."""
+    d = request.get_json(silent=True) or {}
+    new_status = str(d.get("status", "")).lower().strip()
+    valid_statuses = ("new", "investigating", "confirmed", "false_positive", "resolved")
+    if new_status not in valid_statuses:
+        return jsonify(error=f"Invalid status '{new_status}'. Allowed: {list(valid_statuses)}"), 400
+
+    rationale = str(d.get("rationale") or d.get("disposition") or "").strip()[:1000]
+
+    with db() as c:
+        row = c.execute("SELECT id, event_id, incident_id, status FROM alerts WHERE id = ? OR event_id = ?", (identifier, identifier)).fetchone()
+        if not row:
+            return jsonify(error="Alert not found"), 404
+
+        aid = row["id"]
+        eid = row["event_id"]
+        inc_id = row["incident_id"]
+        old_status = row["status"]
+
+        c.execute("""
+            UPDATE alerts
+            SET status = ?, analyst_disposition = ?
+            WHERE id = ?
+        """, (new_status, new_status, aid))
+
+        # Add entry to alert_notes
+        note_text = f"Analyst changed status from {old_status} to {new_status}."
+        if rationale:
+            note_text += f" Rationale: {rationale}"
+
+        c.execute("""
+            INSERT INTO alert_notes (alert_id, author, created_at, note_text)
+            VALUES (?, 'SOC_ANALYST', ?, ?)
+        """, (aid, now(), note_text))
+
+        # Correlate note to incident if linked
+        if inc_id:
+            c.execute("""
+                INSERT INTO incident_notes (incident_id, author, created_at, note_text, note_type)
+                VALUES (?, 'SOC_ANALYST', ?, ?, 'STATUS_CHANGE')
+            """, (inc_id, now(), f"Alert {eid} updated to {new_status}: {rationale[:100]}"))
+
+        # Fetch updated notes
+        notes_raw = c.execute("SELECT * FROM alert_notes WHERE alert_id = ? ORDER BY note_id ASC", (aid,)).fetchall()
+        notes = []
+        for n in notes_raw:
+            nd = dict(n)
+            nd["note"] = nd["note_text"]
+            nd["timestamp"] = nd["created_at"]
+            notes.append(nd)
+
+    return jsonify(status="success", alert_id=aid, event_id=eid, new_status=new_status, rationale=rationale, notes=notes)
+
+@app.post("/api/soc/alerts/<identifier>/notes")
+@auth("analyst")
+def add_alert_note(identifier):
+    """Add analyst investigation note directly to an alert."""
+    d = request.get_json(silent=True) or {}
+    note_text = str(d.get("note") or d.get("note_text") or "").strip()[:2000]
+    if not note_text:
+        return jsonify(error="Field 'note' is required"), 400
+
+    with db() as c:
+        row = c.execute("SELECT id, event_id FROM alerts WHERE id = ? OR event_id = ?", (identifier, identifier)).fetchone()
+        if not row:
+            return jsonify(error="Alert not found"), 404
+
+        aid = row["id"]
+        cur = c.execute("""
+            INSERT INTO alert_notes (alert_id, author, created_at, note_text)
+            VALUES (?, 'SOC_ANALYST', ?, ?)
+        """, (aid, now(), note_text))
+        note_id = cur.lastrowid
+
+        notes_raw = c.execute("SELECT * FROM alert_notes WHERE alert_id = ? ORDER BY note_id ASC", (aid,)).fetchall()
+        notes = []
+        for n in notes_raw:
+            nd = dict(n)
+            nd["note"] = nd["note_text"]
+            nd["timestamp"] = nd["created_at"]
+            notes.append(nd)
+
+    return jsonify(status="success", note_id=note_id, alert_id=aid, notes=notes)
+
+@app.get("/api/soc/telemetry/status")
+@auth("analyst")
+def get_telemetry_status():
+    """Report telemetry pipeline health, last receipt timestamp, and ingestion failure history."""
+    with db() as c:
+        last_success = c.execute("""
+            SELECT timestamp FROM ingestion_telemetry
+            WHERE status = 'SUCCESS'
+            ORDER BY metric_id DESC LIMIT 1
+        """).fetchone()
+
+        total_alerts = c.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        total_incidents = c.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
+
+        recent_failures = [
+            dict(r) for r in c.execute("""
+                SELECT * FROM ingestion_telemetry
+                WHERE status = 'FAILED'
+                ORDER BY metric_id DESC LIMIT 10
+            """).fetchall()
+        ]
+
+        class_counts = {}
+        for r in c.execute("SELECT classification_type, COUNT(*) as cnt FROM alerts GROUP BY classification_type").fetchall():
+            class_counts[r["classification_type"] or "known_attack"] = r["cnt"]
+
+        method_counts = {}
+        for r in c.execute("SELECT detection_method, COUNT(*) as cnt FROM alerts GROUP BY detection_method").fetchall():
+            method_counts[r["detection_method"] or "rule"] = r["cnt"]
+
+    return jsonify(
+        status="operational",
+        pipeline_status="Operational",
+        last_successful_receipt=last_success["timestamp"] if last_success else None,
+        last_event_time=last_success["timestamp"] if last_success else None,
+        total_alerts_ingested=total_alerts,
+        total_incidents=total_incidents,
+        recent_failures=recent_failures,
+        classification_counts=class_counts,
+        classification_breakdown=class_counts,
+        detection_method_breakdown=method_counts
+    )
+
+@app.get("/api/soc/security-events")
+@auth("analyst")
+def list_soc_security_events():
+    """Retrieve SOC internal self-protection security logs with deduplicated event counts."""
+    ev_type = request.args.get("event_type", "").upper().strip()
+    limit = min(int(request.args.get("limit", 100)), 500)
+
+    query = "SELECT * FROM soc_security_events WHERE 1=1"
+    params = []
+    if ev_type and ev_type != "ALL":
+        query += " AND event_type = ?"
+        params.append(ev_type)
+    query += " ORDER BY event_id DESC LIMIT ?"
+    params.append(limit)
+
+    with db() as c:
+        rows = c.execute(query, params).fetchall()
+        events = []
+        for r in rows:
+            ed = dict(r)
+            ed["client_ip"] = ed["source_ip"]
+            ed["occurrences"] = ed["occurrence_count"]
+            events.append(ed)
+        summary = {}
+        for r in c.execute("SELECT event_type, SUM(occurrence_count) as total FROM soc_security_events GROUP BY event_type").fetchall():
+            summary[r["event_type"]] = r["total"]
+
+    return jsonify(status="success", count=len(events), events=events, summary=summary)
+
+@app.post("/api/soc/ml/evaluate")
+@auth("analyst")
+def evaluate_ml_payload():
+    """Modular endpoint to test ML inference evaluation on candidate telemetry."""
+    if not ml_engine:
+        return jsonify(error="Machine Learning Engine is offline or uninstalled"), 503
+
+    d = request.get_json(silent=True) or {}
+    res = ml_engine.evaluate(d)
+    if not res:
+        return jsonify(error="Inference failed to evaluate features"), 400
+
+    inf = res.to_dict()
+    return jsonify(status="success", inference=inf, **inf)
 
 @app.get("/api/soc/reports")
 @auth("analyst")

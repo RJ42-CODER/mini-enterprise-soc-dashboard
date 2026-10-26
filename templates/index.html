@@ -299,6 +299,20 @@
             </div>
           </div>
 
+          <!-- Telemetry Health & Status Banner -->
+          <div id="telemetry-health-banner" class="telemetry-health-banner" style="display:flex; align-items:center; justify-content:space-between; background:rgba(30,41,59,0.7); border:1px solid rgba(148,163,184,0.15); border-radius:8px; padding:10px 16px; margin-bottom:14px; font-size:0.85rem;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="status-dot status-dot-online" style="width:9px; height:9px; background:#10b981; border-radius:50%; display:inline-block;"></span>
+              <span><strong>Telemetry Pipeline:</strong> <span id="telemetry-status-text">Operational</span></span>
+              <span class="text-xs muted">| Last Telemetry: <span id="telemetry-last-seen" class="mono-text">--</span></span>
+            </div>
+            <div style="display:flex; gap:16px;">
+              <span class="text-xs">Known Attacks: <strong id="telemetry-count-attacks" class="mono-text">0</strong></span>
+              <span class="text-xs">Anomalies: <strong id="telemetry-count-anomalies" class="mono-text" style="color:#fbbf24;">0</strong></span>
+              <span class="text-xs">Unknown: <strong id="telemetry-count-unknown" class="mono-text" style="color:#94a3b8;">0</strong></span>
+            </div>
+          </div>
+
           <!-- Filter & Search Toolbar -->
           <div class="alerts-filter-toolbar">
             <div class="filter-search-box">
@@ -324,6 +338,30 @@
                 <option value="PATH_TRAVERSAL">PATH_TRAVERSAL</option>
                 <option value="BRUTE_FORCE_AUTH">BRUTE_FORCE_AUTH</option>
                 <option value="PORT_SCAN">PORT_SCAN</option>
+              </select>
+
+              <select id="alerts-class-filter" class="form-select form-select-sm" aria-label="Filter by Classification">
+                <option value="ALL">All Categories</option>
+                <option value="known_attack">Known Attacks</option>
+                <option value="suspicious_anomaly">Suspicious Anomalies</option>
+                <option value="unknown">Unknown / Out-of-Distribution</option>
+              </select>
+
+              <select id="alerts-method-filter" class="form-select form-select-sm" aria-label="Filter by Detection Method">
+                <option value="ALL">All Methods</option>
+                <option value="rule">Rule-Based Detection</option>
+                <option value="ml_model">Machine Learning Model</option>
+                <option value="statistical_anomaly">Statistical Anomaly</option>
+                <option value="heuristic">Heuristic Analysis</option>
+              </select>
+
+              <select id="alerts-status-filter" class="form-select form-select-sm" aria-label="Filter by Alert Status">
+                <option value="ALL">All Dispositions</option>
+                <option value="new">New</option>
+                <option value="investigating">Investigating</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="false_positive">False Positive</option>
+                <option value="resolved">Resolved</option>
               </select>
             </div>
           </div>
@@ -844,6 +882,98 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="modal-btn-cancel-verify">Cancel</button>
         <button type="button" class="btn btn-primary" id="modal-btn-confirm-verify">Confirm &amp; Verify</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Modal: Alert Detail & Analyst Disposition Dialog -->
+  <div id="modal-alert-detail" class="soc-modal-backdrop" hidden>
+    <div class="soc-modal-box" style="max-width: 720px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="modal-alert-title">Telemetry Alert Investigation</h3>
+          <p class="text-xs muted" id="modal-alert-subtitle" style="margin:2px 0 0;">Event ID: --</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="modal-close-alert-detail">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+        <!-- Alert Badges Cluster -->
+        <div id="modal-alert-badges" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;"></div>
+
+        <!-- Telemetry Attributes Grid -->
+        <div class="settings-info-grid" style="margin-bottom:16px;">
+          <div class="info-item">
+            <span class="info-label">SOURCE IP</span>
+            <span id="modal-alert-source-ip" class="mono-text">--</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">DESTINATION / PROTOCOL</span>
+            <span id="modal-alert-dest" class="mono-text">--</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">HTTP METHOD &amp; PATH</span>
+            <span id="modal-alert-path" class="mono-text">--</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">STATUS CODE &amp; TIME</span>
+            <span id="modal-alert-status-code" class="mono-text">--</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">CORRELATED INCIDENT</span>
+            <span id="modal-alert-incident" class="mono-text">--</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">DETECTION METHOD &amp; MODEL</span>
+            <span id="modal-alert-model" class="mono-text">--</span>
+          </div>
+        </div>
+
+        <!-- Raw Telemetry & Detection Reason Box -->
+        <div style="margin-bottom:16px;">
+          <label class="form-label">Detection Evidence / Reason</label>
+          <div id="modal-alert-reason" class="mono-text text-sm" style="background:rgba(15,23,42,0.8); padding:10px; border-radius:6px; border:1px solid rgba(148,163,184,0.15);"></div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <label class="form-label">Raw Telemetry &amp; Network Metadata (JSON)</label>
+          <pre id="modal-alert-meta-json" class="mono-text text-xs" style="background:rgba(15,23,42,0.9); padding:10px; border-radius:6px; border:1px solid rgba(148,163,184,0.15); max-height:160px; overflow-y:auto; color:#a5b4fc;"></pre>
+        </div>
+
+        <!-- Analyst Disposition Form -->
+        <div style="background:rgba(30,41,59,0.5); padding:14px; border-radius:8px; border:1px solid rgba(148,163,184,0.15); margin-bottom:16px;">
+          <h4 style="margin:0 0 10px; font-size:0.9rem; font-weight:600; color:#e2e8f0;">Update Analyst Disposition</h4>
+          <div class="form-row" style="display:flex; gap:12px; margin-bottom:10px;">
+            <div style="flex:1;">
+              <label class="form-label" for="modal-alert-set-status">Disposition Status</label>
+              <select id="modal-alert-set-status" class="form-select">
+                <option value="investigating">Investigating</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="false_positive">False Positive</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+            <div style="flex:2;">
+              <label class="form-label" for="modal-alert-rationale">Disposition Rationale</label>
+              <input type="text" id="modal-alert-rationale" class="form-input" placeholder="Explain disposition decision...">
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-save-alert-status">Apply Disposition</button>
+        </div>
+
+        <!-- Alert Notes & Timeline -->
+        <div>
+          <h4 style="margin:0 0 8px; font-size:0.9rem; font-weight:600; color:#e2e8f0;">Analyst Notes &amp; Audit Trail</h4>
+          <div id="modal-alert-notes-list" style="margin-bottom:10px; max-height:120px; overflow-y:auto;">
+            <p class="muted text-xs">No analyst notes recorded yet.</p>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="modal-alert-new-note" class="form-input" placeholder="Add an investigation note to this alert...">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-add-alert-note">Add Note</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="modal-btn-close-alert-detail">Close</button>
       </div>
     </div>
   </div>
